@@ -11,17 +11,26 @@ set -euo pipefail
 platform="${1:?platform (linux_amd64 | osx_arm64)}"
 dest="${2:-base}"
 repo="hugr-lab/duckdb-acl"
-run_id="$(gh run list -R "$repo" -w CI -b main -s success --limit 1 --json databaseId,headSha \
-	--jq '.[0].databaseId')"
-if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+# The newest green run is the one to take, but not every green run carries every platform (a job
+# can be skipped and the run still succeed), so walk back a few before giving up.
+runs="$(gh run list -R "$repo" -w CI -b main -s success --limit 5 --json databaseId --jq '.[].databaseId')"
+if [ -z "$runs" ]; then
 	echo "fetch_base: no successful CI run of $repo main found" >&2
 	exit 1
 fi
-sha="$(gh run view -R "$repo" "$run_id" --json headSha --jq .headSha)"
-echo "fetch_base: $repo main run $run_id ($sha), artifact acl-$platform"
 rm -rf "$dest"
-gh run download -R "$repo" "$run_id" -n "acl-$platform" -D "$dest"
+for run_id in $runs; do
+	sha="$(gh run view -R "$repo" "$run_id" --json headSha --jq .headSha)"
+	echo "fetch_base: trying $repo main run $run_id ($sha) for artifact acl-$platform"
+	if gh run download -R "$repo" "$run_id" -n "acl-$platform" -D "$dest" 2>/dev/null; then
+		break
+	fi
+	echo "fetch_base: ... that run has no acl-$platform artifact"
+done
 ext="$dest/acl.duckdb_extension"
-test -f "$ext" || { echo "fetch_base: $ext missing after download" >&2; ls -R "$dest" >&2; exit 1; }
+test -f "$ext" || {
+	echo "fetch_base: no acl-$platform artifact in the last 5 green main runs of $repo" >&2
+	exit 1
+}
 echo "fetch_base: $ext ($(wc -c < "$ext") bytes)"
 echo "$ext"
