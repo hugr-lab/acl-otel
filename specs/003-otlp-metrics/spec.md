@@ -1,6 +1,6 @@
 # Spec 003: OTLP metrics - the base's counters and gauges, our histograms, bounded
 
-- **Status**: draft
+- **Status**: implemented
 - **Date**: 2026-09-08
 - **Author**: hugr lab
 
@@ -98,7 +98,7 @@ other.
 
 | setting | default | what |
 | --- | --- | --- |
-| `acl_otel_metrics` | `true` | export metrics at all (logs are independent) |
+| `acl_otel_metrics` | `true` | export metrics at all, decided at the next `acl_otel_start()` (logs are independent) |
 | `acl_otel_metrics_interval` | `15` | seconds between scrapes |
 | `acl_otel_histogram_buckets` | `''` | JSON: instrument → bounds |
 | `acl_otel_histogram_sums` | `true` | also emit `_sum` / `_count` counters (R2.5) |
@@ -140,10 +140,12 @@ exporter; where a bridge drops them, `acl_otel_histogram_sums` keeps a rate and 
   histogram accumulator - bucket edges inclusive-upper, sum/min/max, a value above the last bound in
   the overflow bucket; the series cap - the 1001st distinct role folds into `other` and is counted,
   an allowlisted value stays exact whenever it arrives; the bucket document parsed and refused.
-- **C++ against the fake receiver** (extending spec 002's `acl_otel_test_otlp` target): one tick
-  exported over HTTP and gRPC, decoded from the protobuf - the base's counters and gauges by name,
-  attributes and unit; a histogram with its bounds and counts; the `_sum` / `_count` pair when the
-  setting is on; cumulative temporality and a stable `start_ts` across two ticks.
+- **C++ against a fake receiver** (`test_acl_otel_metrics_otlp`, its own CMake target beside spec
+  002's): one tick exported over HTTP and gRPC and decoded from the protobuf - the base's counters
+  as cumulative monotonic sums and its gauges as gauges, by name, attributes and unit; a histogram
+  with its bounds, buckets, count and sum; the `_sum` / `_count` pair, and its absence when the
+  setting is off; an instrument nothing was recorded into absent altogether; a `start_ts` that does
+  not move between ticks; a port nobody listens on counted as an export error with its reason.
 - **sqllogictest** `acl_otel_metrics.test`: the settings refuse a session scope, a malformed bucket
   document is refused at the SET, the status carries the `metrics` object; beside acl - a burst of
   refusals moves `acl.denials` in `acl_metrics()` and the same number leaves as a point (R2.4,

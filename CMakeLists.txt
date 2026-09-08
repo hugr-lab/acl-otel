@@ -43,6 +43,15 @@ target_include_directories(acl_otel_test_otlp PRIVATE test/cpp ${CMAKE_CURRENT_S
 target_link_libraries(acl_otel_test_otlp duckdb ${ACL_OTEL_SDK_LIBS} opentelemetry-cpp::proto
                       opentelemetry-cpp::proto_grpc gRPC::grpc++)
 
+# spec 003's twin: the metrics transport against fake receivers of its own
+add_executable(acl_otel_test_metrics_otlp EXCLUDE_FROM_ALL test/cpp/test_acl_otel_metrics_otlp.cpp
+               src/acl_otel_otlp.cpp src/acl_otel_otlp_metrics.cpp src/acl_otel_metrics.cpp src/acl_otel_sink.cpp
+               src/acl_otel_state.cpp src/acl_otel_rules.cpp)
+target_include_directories(acl_otel_test_metrics_otlp PRIVATE test/cpp
+                           ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib)
+target_link_libraries(acl_otel_test_metrics_otlp duckdb ${ACL_OTEL_SDK_LIBS} opentelemetry-cpp::proto
+                      opentelemetry-cpp::proto_grpc gRPC::grpc++)
+
 install(
   TARGETS ${EXTENSION_NAME}
   EXPORT "${DUCKDB_EXPORT_SET}"

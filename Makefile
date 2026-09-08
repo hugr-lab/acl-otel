@@ -28,7 +28,8 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 # Each test/cpp/test_*.cpp is its own program, built from the already-compiled release tree and
 # linked against the shared libduckdb. Same generator as the main build: GEN=ninja make test-cpp.
 # the transport's test links the SDK and is a CMake target (below), not a Makefile-compiled one
-TEST_CPP_SOURCES := $(filter-out test/cpp/test_acl_otel_otlp.cpp,$(wildcard test/cpp/test_*.cpp))
+TEST_CPP_SOURCES := $(filter-out test/cpp/test_acl_otel_otlp.cpp test/cpp/test_acl_otel_metrics_otlp.cpp,\
+	$(wildcard test/cpp/test_*.cpp))
 TEST_CPP_FLAGS := -std=c++17 -O2 -DNDEBUG -pthread
 TEST_CPP_DIR := build/test
 TEST_CPP_BINS := $(patsubst test/cpp/%.cpp,$(TEST_CPP_DIR)/%,$(TEST_CPP_SOURCES))
@@ -62,11 +63,13 @@ test-cpp:
 	@$(MAKE) --no-print-directory test-cpp-run
 
 # the transport's test is a CMake target (it links the SDK): built here on demand, run with the rest
-TEST_CPP_CMAKE_BINS := build/release/extension/acl_otel/acl_otel_test_otlp
+TEST_CPP_CMAKE_BINS := build/release/extension/acl_otel/acl_otel_test_otlp \
+	build/release/extension/acl_otel/acl_otel_test_metrics_otlp
 
 test-cpp-run: $(TEST_CPP_BINS)
 	@test -n "$(TEST_CPP_BINS)" || { echo "test-cpp: no test/cpp/test_*.cpp sources found" >&2; exit 1; }
-	@cmake --build build/release --target acl_otel_test_otlp > build/test/cmake-tests.log 2>&1 || \
+	@cmake --build build/release --target acl_otel_test_otlp acl_otel_test_metrics_otlp \
+		> build/test/cmake-tests.log 2>&1 || \
 		{ cat build/test/cmake-tests.log; exit 1; }
 	@fail=0; for b in $(TEST_CPP_BINS) $(TEST_CPP_CMAKE_BINS); do \
 		if "$$b" > "$$b.log" 2>&1; then echo "  PASS $$(basename $$b)"; \

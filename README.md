@@ -23,8 +23,13 @@ in the base; what is built so far is in [`specs/`](specs/README.md).
   context from `traceparent`, the node as the resource - exported over OTLP HTTP/protobuf or gRPC by
   the OpenTelemetry C++ SDK, batch by batch from the extension's own worker. A failed export is
   counted and named in the status, never retried across a restart.
-- Not yet: metrics (spec 003), per-connection logging (004), enrichment and sampling (005), the
-  self-metrics and `strict` mode (006), rules kept in the policy catalog (007).
+- **Spec 003 (OTLP metrics)**: the base's counters and gauges scraped every
+  `acl_otel_metrics_interval` and pushed under their own names, three histograms built here from the
+  events (rewrite duration, session duration, ingest rows) with bounds an operator may replace, and
+  the high-cardinality series (by role, object, subject, one claim) that exist only when named -
+  each capped, with everything past the cap folded into `other` and counted.
+- Not yet: per-connection logging (004), enrichment and sampling (005), the self-metrics and
+  `strict` mode (006), rules kept in the policy catalog (007).
 
 ```sql
 LOAD acl;
@@ -48,6 +53,10 @@ SELECT acl_otel_flush();      -- export what is queued now and wait for it
 | `acl_otel_resource_attributes` | `''` | extra resource attributes, `k=v,k=v` |
 | `acl_otel_level_rules` | `''` | a JSON array of `{role, subject, issuer, door, level}` rules, first match wins |
 | `acl_otel_queue_size` / `_batch_size` / `_flush_interval` | `10000` / `512` / `5` | the sink's queue, batch and flush seconds (at the next `acl_otel_start()`) |
+| `acl_otel_metrics` / `_metrics_interval` | `true` / `15` | export metrics at all, and the seconds between scrapes |
+| `acl_otel_histogram_buckets` / `_histogram_sums` | `''` / `true` | the bounds per histogram as JSON, and the `_sum` / `_count` pair beside each |
+| `acl_otel_series` / `_claim_dimension` | `''` / `''` | the opt-in series (`by_role,by_object,by_subject,by_claim`) and the one claim `by_claim` counts by |
+| `acl_otel_max_series` / `_series_allowlist` | `1000` / `''` | distinct label values before the `other` fold, and the values kept exact regardless |
 
 A setting at its default means the standard environment decides, so a container configured the
 OpenTelemetry way needs no SET; a setting that is set wins over its variable.
