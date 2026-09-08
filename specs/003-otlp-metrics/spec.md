@@ -59,8 +59,11 @@ re-derived from events (R2.4): the base's number IS the exported number.
 
 ### The histograms (R2.2)
 
-Built here, from the events the sink already hands the worker - no second subscription, no second
-queue. Each is an `InstrumentType::kHistogram` with `HistogramPointData` (bounds, per-bucket counts,
+Built here, from the events the sink receives - no second subscription, no second queue. The base
+calls a sink only for the events its level records, so **a histogram sees what the level records**:
+at `denied` there is no distribution of allowed statements, and the base's counters (which count
+whatever the level) are the ones that still answer "how many". `Observe` runs on the base's audit
+thread, never on a decision: O(bounds) and one short lock. Each is an `InstrumentType::kHistogram` with `HistogramPointData` (bounds, per-bucket counts,
 sum, min, max), accumulated cumulatively under one small lock and emitted at every tick:
 
 | instrument | from | attributes | default bounds |

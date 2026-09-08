@@ -9,6 +9,7 @@
 #include "yyjson.hpp"
 
 #include <algorithm>
+#include <chrono>
 
 namespace duckdb {
 namespace acl_otel {
@@ -184,6 +185,281 @@ int64_t CappedSeries::Folded() const {
 idx_t CappedSeries::Distinct() const {
 	std::lock_guard<std::mutex> guard(lock);
 	return known.size();
+}
+
+namespace {
+
+int64_t NowMicros() {
+	return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch())
+	    .count();
+}
+
+string JsonQuote(const string &value) {
+	string out = "\"";
+	for (auto c : value) {
+		if (c == '"' || c == '\\') {
+			out += '\\';
+			out += c;
+		} else if (static_cast<unsigned char>(c) < 0x20) {
+			out += ' ';
+		} else {
+			out += c;
+		}
+	}
+	return out + "\"";
+}
+
+//! the instrument a series name stands for, and the label it counts by (R2.3)
+struct SeriesSpec {
+	const char *option;
+	const char *name;
+	const char *label;
+};
+
+const SeriesSpec SERIES_SPECS[] = {{"by_role", "acl.decisions.by_role", "role"},
+                                   {"by_object", "acl.decisions.by_object", "object"},
+                                   {"by_subject", "acl.decisions.by_subject", "subject"},
+                                   {"by_claim", "acl.decisions.by_claim", "claim"}};
+
+} // namespace
+
+OtelMetrics::OtelMetrics(int64_t interval_s_p, vector<Histogram> histograms_p, shared_ptr<MetricsExporter> exporter_p)
+    : interval_s(interval_s_p <= 0 ? 15 : interval_s_p), start_us(NowMicros()), histograms(std::move(histograms_p)),
+      exporter(std::move(exporter_p)) {
+	if (!exporter) {
+		exporter = make_shared_ptr<NoMetricsExporter>("no endpoint");
+	}
+}
+
+OtelMetrics::~OtelMetrics() {
+	Stop();
+}
+
+void OtelMetrics::SetSeries(const vector<string> &names, const string &claim, idx_t cap,
+                            const std::map<string, vector<string>> &allowlists) {
+	std::lock_guard<std::mutex> guard(lock);
+	claim_dimension = claim;
+	series.clear();
+	for (auto &spec : SERIES_SPECS) {
+		bool wanted = false;
+		for (auto &name : names) {
+			wanted = wanted || name == spec.option;
+		}
+		// by_claim without a claim to count by is not a series, it is a mistake the settings refuse
+		if (!wanted || (string(spec.option) == "by_claim" && claim.empty())) {
+			continue;
+		}
+		auto one = make_uniq<CappedSeries>(spec.name, spec.label, cap);
+		auto allowed = allowlists.find(spec.name);
+		if (allowed != allowlists.end()) {
+			one->SetAllowlist(allowed->second);
+		}
+		series.push_back(std::move(one));
+	}
+}
+
+void OtelMetrics::SetExporter(shared_ptr<MetricsExporter> exporter_p) {
+	std::lock_guard<std::mutex> guard(lock);
+	exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoMetricsExporter>("no endpoint");
+}
+
+void OtelMetrics::Observe(const acl::AuditEvent &event) {
+	std::lock_guard<std::mutex> guard(lock);
+	auto record = [&](const char *name, const Labels &labels, double value) {
+		for (auto &histogram : histograms) {
+			if (histogram.name == name) {
+				histogram.Record(labels, value);
+				return;
+			}
+		}
+	};
+	if ((event.kind == "statement" || event.kind == "admin") && event.rewrite_us >= 0) {
+		record("acl.rewrite.duration", {{"kind", event.kind}, {"verdict", event.allowed ? "allowed" : "denied"}},
+		       static_cast<double>(event.rewrite_us));
+	}
+	if (event.kind == "session" && event.duration_us >= 0) {
+		record("acl.session.duration",
+		       {{"door", event.door.empty() ? "gateway" : event.door},
+		        {"how", event.detail.empty() ? "closed" : event.detail}},
+		       static_cast<double>(event.duration_us) / 1000000.0);
+	}
+	if (event.kind == "ingest" && event.rows >= 0) {
+		record("acl.ingest.rows", {{"door", event.door.empty() ? "gateway" : event.door}},
+		       static_cast<double>(event.rows));
+	}
+	// the opt-in series: only decisions, and only what the operator asked for (R2.3)
+	if (event.kind != "statement" && event.kind != "admin") {
+		return;
+	}
+	Labels verdict {{"verdict", event.allowed ? "allowed" : "denied"}};
+	for (auto &one : series) {
+		if (one->Name() == "acl.decisions.by_role") {
+			for (auto &role : event.principal.roles) {
+				one->Add(role, verdict);
+			}
+		} else if (one->Name() == "acl.decisions.by_object") {
+			for (auto &object : event.objects) {
+				one->Add(object.name, {{"capability", object.capability}, {"verdict", verdict[0].second}});
+			}
+		} else if (one->Name() == "acl.decisions.by_subject") {
+			if (!event.principal.subject.empty()) {
+				one->Add(event.principal.subject, verdict);
+			}
+		} else if (one->Name() == "acl.decisions.by_claim") {
+			auto claim = event.principal.claims.find(claim_dimension);
+			if (claim != event.principal.claims.end() && !claim->second.empty()) {
+				one->Add(claim->second, verdict);
+			}
+		}
+	}
+}
+
+MetricsSnapshot OtelMetrics::Build(acl::AuditHooks &hooks) {
+	MetricsSnapshot snapshot;
+	snapshot.start_us = start_us;
+	snapshot.now_us = NowMicros();
+	// R2.1 / R2.4: the base's own numbers, by name, never re-derived here
+	auto counters = hooks.Counters().Snapshot();
+	auto gauges = hooks.Gauges().Snapshot();
+	auto take = [&](const vector<acl::AuditMetric> &metrics, bool monotonic) {
+		for (auto &metric : metrics) {
+			MetricPoint point;
+			point.name = metric.name;
+			point.labels = metric.attributes;
+			point.value = metric.value;
+			point.monotonic = monotonic;
+			point.unit = metric.unit;
+			point.description = metric.description;
+			snapshot.points.push_back(std::move(point));
+		}
+	};
+	take(counters, true);
+	take(gauges, false);
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		snapshot.histograms = histograms; // a copy: the accumulation goes on while this is exported
+		for (auto &one : series) {
+			for (auto &entry : one->Points()) {
+				MetricPoint point;
+				point.name = one->Name();
+				point.labels = entry.first;
+				point.value = entry.second;
+				point.monotonic = true;
+				point.unit = "1";
+				point.description = "decisions, by a label the operator asked for (spec 003)";
+				snapshot.points.push_back(std::move(point));
+			}
+		}
+	}
+	return snapshot;
+}
+
+bool OtelMetrics::Send(const MetricsSnapshot &snapshot) {
+	shared_ptr<MetricsExporter> transport;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		transport = exporter;
+	}
+	string error;
+	stats.ticks++;
+	int64_t points = NumericCast<int64_t>(snapshot.points.size());
+	for (auto &histogram : snapshot.histograms) {
+		points += NumericCast<int64_t>(histogram.points.size());
+	}
+	stats.points = points;
+	if (transport->Export(snapshot, error)) {
+		stats.exported++;
+		stats.last_export_us = snapshot.now_us;
+		return true;
+	}
+	if (!transport->Configured()) {
+		stats.dropped_no_exporter++;
+		return false;
+	}
+	stats.export_errors++;
+	std::lock_guard<std::mutex> guard(lock);
+	stats.last_error = error;
+	return false;
+}
+
+bool OtelMetrics::TickNow(acl::AuditHooks &hooks_p) {
+	return Send(Build(hooks_p));
+}
+
+void OtelMetrics::Start(shared_ptr<acl::AuditHooks> hooks_p) {
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if (worker.joinable()) {
+			return;
+		}
+		hooks = std::move(hooks_p);
+		stopping = false;
+	}
+	worker = std::thread([this] { Run(); });
+}
+
+void OtelMetrics::Stop() {
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if (stopping) {
+			return;
+		}
+		stopping = true;
+	}
+	wake.notify_all();
+	if (worker.joinable()) {
+		worker.join();
+	}
+}
+
+void OtelMetrics::Run() {
+	std::unique_lock<std::mutex> guard(lock);
+	while (!stopping) {
+		wake.wait_for(guard, std::chrono::seconds(interval_s), [this] { return stopping; });
+		if (stopping) {
+			break;
+		}
+		auto registry = hooks;
+		guard.unlock();
+		if (registry) {
+			Send(Build(*registry));
+		}
+		guard.lock();
+	}
+}
+
+string OtelMetrics::ExporterName() {
+	std::lock_guard<std::mutex> guard(lock);
+	return exporter->Describe();
+}
+
+string OtelMetrics::LastError() {
+	std::lock_guard<std::mutex> guard(lock);
+	return stats.last_error;
+}
+
+string OtelMetrics::StatusJson() {
+	string json = "{\"interval\":" + std::to_string(interval_s);
+	json += ",\"exporter\":" + JsonQuote(ExporterName());
+	json += ",\"ticks\":" + std::to_string(stats.ticks.load());
+	json += ",\"exported\":" + std::to_string(stats.exported.load());
+	json += ",\"points\":" + std::to_string(stats.points.load());
+	json += ",\"dropped_no_exporter\":" + std::to_string(stats.dropped_no_exporter.load());
+	json += ",\"export_errors\":" + std::to_string(stats.export_errors.load());
+	auto last = stats.last_export_us.load();
+	json += ",\"last_export_us\":" + (last > 0 ? std::to_string(last) : string("null"));
+	auto error = LastError();
+	json += ",\"last_error\":" + (error.empty() ? string("null") : JsonQuote(error));
+	json += ",\"series\":[";
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		for (idx_t i = 0; i < series.size(); i++) {
+			json += string(i ? "," : "") + "{\"name\":" + JsonQuote(series[i]->Name()) +
+			        ",\"distinct\":" + std::to_string(series[i]->Distinct()) +
+			        ",\"folded\":" + std::to_string(series[i]->Folded()) + "}";
+		}
+	}
+	return json + "]}";
 }
 
 } // namespace acl_otel

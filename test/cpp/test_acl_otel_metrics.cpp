@@ -9,10 +9,54 @@
 
 #include "duckdb/common/error_data.hpp"
 
+#include <chrono>
+#include <thread>
+
 using namespace duckdb;
 using namespace acl_otel_test;
 
 namespace {
+
+//! the transport, minus the network: it keeps the last snapshot it was handed
+struct RecordingMetrics : acl_otel::MetricsExporter {
+	acl_otel::MetricsSnapshot last;
+	bool Export(const acl_otel::MetricsSnapshot &snapshot, string &) override {
+		last = snapshot;
+		return true;
+	}
+	string Describe() const override {
+		return "recording";
+	}
+};
+
+struct RefusingMetrics : acl_otel::MetricsExporter {
+	bool Export(const acl_otel::MetricsSnapshot &, string &error) override {
+		error = "the collector said no";
+		return false;
+	}
+	string Describe() const override {
+		return "refusing";
+	}
+};
+
+acl::AuditEvent MakeEvent(const string &kind, bool allowed) {
+	acl::AuditEvent event;
+	event.kind = kind;
+	event.allowed = allowed;
+	event.ts_us = 1757000000000000;
+	return event;
+}
+
+//! wait for a condition the worker thread satisfies, or give up
+bool Within(int64_t ms, const std::function<bool()> &done) {
+	for (int64_t waited = 0; waited < ms; waited += 20) {
+		if (done()) {
+			return true;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+	return done();
+}
 
 acl_otel::Histogram RewriteHistogram() {
 	for (auto &histogram : acl_otel::DefaultHistograms()) {
@@ -147,6 +191,93 @@ int main() {
 		series.Add("c.orders", {{"capability", "insert"}});
 		Check(series.Points().size() == 2, "the same value under two capabilities is two series");
 		Check(series.Distinct() == 1, "...and one distinct object against the cap");
+	}
+	{
+		// the scrape (R2.1/R2.4): the base's counters and gauges by name, ours beside them, one tick
+		acl::AuditHooks hooks;
+		hooks.Counters().Add("acl.decisions", {{"verdict", "allowed"}});
+		hooks.Counters().Add("acl.decisions", {{"verdict", "allowed"}});
+		hooks.Counters().Add("acl.denials", {{"reason_code", "capability"}});
+		hooks.Gauges().Register("acl.sessions.live", {{"door", "flight"}}, "1", "sessions", [] { return int64_t(7); });
+		auto recording = make_shared_ptr<RecordingMetrics>();
+		acl_otel::OtelMetrics metrics(15, acl_otel::DefaultHistograms(), recording);
+		metrics.SetSeries({"by_role"}, "", 100, {});
+		auto allowed = MakeEvent("statement", true);
+		allowed.rewrite_us = 120;
+		allowed.principal.roles = {"analyst"};
+		metrics.Observe(allowed);
+		auto closed = MakeEvent("session", true);
+		closed.duration_us = 90000000; // 90 s
+		closed.door = "flight";
+		closed.detail = "idle";
+		metrics.Observe(closed);
+		Check(metrics.TickNow(hooks), "the tick was taken by the transport");
+		auto &snapshot = recording->last;
+		int64_t decisions = 0, sessions_live = 0, by_role = 0;
+		bool decisions_monotonic = false, gauge_monotonic = true;
+		for (auto &point : snapshot.points) {
+			if (point.name == "acl.decisions") {
+				decisions = point.value;
+				decisions_monotonic = point.monotonic;
+			}
+			if (point.name == "acl.sessions.live") {
+				sessions_live = point.value;
+				gauge_monotonic = point.monotonic;
+			}
+			if (point.name == "acl.decisions.by_role") {
+				by_role = point.value;
+			}
+		}
+		Check(decisions == 2 && decisions_monotonic, "the base's counter, by its own name, as a monotonic sum");
+		Check(sessions_live == 7 && !gauge_monotonic, "the base's gauge, read at snapshot time, as a gauge");
+		Check(by_role == 1, "the opt-in series is exported beside them");
+		int64_t rewrite_count = 0, session_count = 0;
+		double session_value = 0;
+		for (auto &histogram : snapshot.histograms) {
+			for (auto &point : histogram.points) {
+				if (histogram.name == "acl.rewrite.duration") {
+					rewrite_count += point.second.count;
+				}
+				if (histogram.name == "acl.session.duration") {
+					session_count += point.second.count;
+					session_value = point.second.sum;
+				}
+			}
+		}
+		Check(rewrite_count == 1, "the rewrite histogram saw the statement");
+		Check(session_count == 1 && session_value == 90, "the session histogram counts seconds, not microseconds");
+		Check(snapshot.start_us > 0 && snapshot.now_us >= snapshot.start_us, "the snapshot carries its window");
+		Check(metrics.StatusJson().find("\"ticks\":1") != string::npos, "the status counts the tick");
+	}
+	{
+		// no transport: every tick is counted as dropped, never silent (R6.2)
+		acl::AuditHooks hooks;
+		acl_otel::OtelMetrics metrics(15, acl_otel::DefaultHistograms(), nullptr);
+		Check(!metrics.TickNow(hooks), "a tick with no exporter does not export");
+		Check(metrics.stats.dropped_no_exporter == 1 && metrics.stats.export_errors == 0,
+		      "...and is counted as a drop, not as an error");
+		Check(metrics.ExporterName().rfind("none", 0) == 0, "the status names the stand-in");
+	}
+	{
+		// a transport that refuses: an export error with its reason
+		acl::AuditHooks hooks;
+		auto refusing = make_shared_ptr<RefusingMetrics>();
+		acl_otel::OtelMetrics metrics(15, acl_otel::DefaultHistograms(), refusing);
+		Check(!metrics.TickNow(hooks), "the refused tick did not export");
+		Check(metrics.stats.export_errors == 1 && metrics.LastError() == "the collector said no",
+		      "...and the reason is the transport's own");
+	}
+	{
+		// the thread: it starts, ticks on its own clock, and stops
+		acl::AuditHooks hooks_object;
+		auto hooks = shared_ptr<acl::AuditHooks>(&hooks_object, [](acl::AuditHooks *) {});
+		auto recording = make_shared_ptr<RecordingMetrics>();
+		acl_otel::OtelMetrics metrics(1, acl_otel::DefaultHistograms(), recording);
+		metrics.Start(hooks);
+		Check(Within(4000, [&] { return metrics.stats.ticks >= 1; }), "the scrape ticks on its own clock");
+		metrics.Stop();
+		auto after = metrics.stats.ticks.load();
+		Check(Within(1500, [&] { return metrics.stats.ticks == after; }), "...and stops when it is stopped");
 	}
 	std::printf("PASS\n");
 	return 0;

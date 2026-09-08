@@ -91,5 +91,110 @@ private:
 	int64_t folded = 0;
 };
 
+//! One counter or gauge as a transport receives it: the base's own name, attributes, unit and
+//! description, plus what kind of instrument it is. `monotonic` separates a counter from a gauge.
+struct MetricPoint {
+	string name;
+	Labels labels;
+	int64_t value = 0;
+	bool monotonic = false;
+	string unit;
+	string description;
+};
+
+//! What one tick hands the transport: the base's numbers as they are now, our histograms as they
+//! have accumulated, and the moment the extension started (cumulative temporality, spec 003).
+struct MetricsSnapshot {
+	int64_t start_us = 0;
+	int64_t now_us = 0;
+	vector<MetricPoint> points;
+	vector<Histogram> histograms;
+};
+
+//! The transport seam, the metrics twin of spec 002's `Exporter`: the OTLP exporter implements it,
+//! and a stand-in that counts stands where there is none.
+class MetricsExporter {
+public:
+	virtual ~MetricsExporter() = default;
+	virtual bool Export(const MetricsSnapshot &snapshot, string &error) = 0;
+	virtual string Describe() const = 0;
+	virtual bool Configured() const {
+		return true;
+	}
+};
+
+//! No endpoint configured: nothing leaves, and every tick is counted as dropped (R6.2).
+class NoMetricsExporter : public MetricsExporter {
+public:
+	explicit NoMetricsExporter(string why_p) : why(std::move(why_p)) {
+	}
+	bool Export(const MetricsSnapshot &, string &) override {
+		return false;
+	}
+	string Describe() const override {
+		return "none (" + why + ")";
+	}
+	bool Configured() const override {
+		return false;
+	}
+
+private:
+	string why;
+};
+
+//! The extension's own numbers about metrics (R7), beside the sink's.
+struct MetricsStats {
+	std::atomic<int64_t> ticks {0};
+	std::atomic<int64_t> exported {0};
+	std::atomic<int64_t> dropped_no_exporter {0};
+	std::atomic<int64_t> export_errors {0};
+	std::atomic<int64_t> points {0}; // what the last tick sent
+	std::atomic<int64_t> last_export_us {0};
+	string last_error; // under `lock`
+};
+
+//! The scrape (R2.1): one thread, one tick every `interval_s`, one Export per tick. Fed from the
+//! sink's OnEvent for the histograms and the opt-in series - so a histogram sees exactly what the
+//! audit level records, which is the honest answer and the one the spec states.
+class OtelMetrics {
+public:
+	OtelMetrics(int64_t interval_s, vector<Histogram> histograms, shared_ptr<MetricsExporter> exporter);
+	~OtelMetrics();
+
+	//! every event the sink receives, before its queue: O(bounds), one short lock, no I/O (R10.1)
+	void Observe(const acl::AuditEvent &event);
+	//! the series of R2.3, by name (`by_role`, `by_object`, `by_subject`, `by_claim`); empty = none
+	void SetSeries(const vector<string> &names, const string &claim, idx_t cap,
+	               const std::map<string, vector<string>> &allowlists);
+	void SetExporter(shared_ptr<MetricsExporter> exporter);
+	//! export one tick now (a test, a shutdown); true when the transport took it
+	bool TickNow(acl::AuditHooks &hooks);
+	//! start scraping `hooks` until Stop()
+	void Start(shared_ptr<acl::AuditHooks> hooks);
+	void Stop();
+
+	string ExporterName();
+	string LastError();
+	string StatusJson();
+	MetricsStats stats;
+
+private:
+	void Run();
+	MetricsSnapshot Build(acl::AuditHooks &hooks);
+	bool Send(const MetricsSnapshot &snapshot);
+
+	int64_t interval_s;
+	int64_t start_us;
+	std::mutex lock;
+	std::condition_variable wake;
+	bool stopping = false;
+	vector<Histogram> histograms; // under `lock`
+	vector<unique_ptr<CappedSeries>> series;
+	string claim_dimension;
+	shared_ptr<MetricsExporter> exporter;
+	shared_ptr<acl::AuditHooks> hooks;
+	std::thread worker;
+};
+
 } // namespace acl_otel
 } // namespace duckdb
