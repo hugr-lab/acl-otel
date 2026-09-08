@@ -123,6 +123,13 @@ plus the resource's); names are stable; values are bounded by the base's own rul
 opt-in series, by the cap. Histograms reach `customMetrics` through the Collector's `azuremonitor`
 exporter; where a bridge drops them, `acl_otel_histogram_sums` keeps a rate and a mean alive.
 
+### What a SET costs
+
+Swapping a transport destroys the old one, and an SDK exporter's destructor shuts its client down -
+bounded by two seconds, but not free. Both sinks release the old pointer **outside** their lock, so
+a `SET GLOBAL acl_otel_endpoint = ...` never makes the base's audit thread wait behind a socket
+closing; the SET itself may.
+
 ## Enforcement & security
 
 - Nothing new on the decision path: the scrape runs on our thread, the histograms are folded in the

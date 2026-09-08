@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace duckdb {
 namespace acl_otel {
@@ -307,8 +308,14 @@ void OtelMetrics::SetSeries(const vector<string> &names, const string &claim, id
 }
 
 void OtelMetrics::SetExporter(shared_ptr<MetricsExporter> exporter_p) {
-	std::lock_guard<std::mutex> guard(lock);
-	exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoMetricsExporter>("no endpoint");
+	shared_ptr<MetricsExporter> previous;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		previous = std::move(exporter);
+		exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoMetricsExporter>("no endpoint");
+	}
+	// as the sink does: the old transport's destructor shuts a client down, and Observe holds this
+	// same lock on the base's audit thread
 }
 
 void OtelMetrics::SetHistogramSums(bool on) {
@@ -413,7 +420,9 @@ MetricsSnapshot OtelMetrics::Build(acl::AuditHooks &hooks) {
 				MetricPoint sum;
 				sum.name = histogram.name + "_sum";
 				sum.labels = point.first;
-				sum.value = static_cast<int64_t>(point.second.sum);
+				// the pair is integral (a MetricPoint is), so a fractional sum rounds rather than
+				// truncates - the histogram beside it carries the exact number
+				sum.value = static_cast<int64_t>(std::llround(point.second.sum));
 				sum.monotonic = true;
 				sum.unit = histogram.unit;
 				sum.description = histogram.description + " (sum)";
