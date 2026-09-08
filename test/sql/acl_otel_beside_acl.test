@@ -5,10 +5,10 @@
 require-env ACL_EXT
 
 statement ok
-LOAD '${ACL_EXT}';
+LOAD '{ACL_EXT}';
 
 statement ok
-LOAD '__BUILD_DIRECTORY__/extension/acl_otel/acl_otel.duckdb_extension';
+LOAD '{BUILD_DIRECTORY}/extension/acl_otel/acl_otel.duckdb_extension';
 
 query I
 SELECT acl_otel_status() LIKE '%"acl_loaded":true%';
@@ -82,8 +82,12 @@ SELECT acl_otel_flush();
 ----
 true
 
+# the sink's own numbers, not the scrape's: `queue_fill` is where the log side of the status starts
+# (spec 003 put a `metrics` object with fields of the same names in front of it)
 query III
-SELECT s LIKE '%"export_errors":0%', s LIKE '%"last_error":null%', s LIKE '%127.0.0.1 port 1%' FROM (SELECT acl_otel_status() AS s);
+SELECT s LIKE '%"queue_fill"%"export_errors":0%', s LIKE '%"queue_fill"%"last_error":null%',
+       s LIKE '%127.0.0.1 port 1%'
+FROM (SELECT acl_otel_status() AS s);
 ----
 false	false	true
 

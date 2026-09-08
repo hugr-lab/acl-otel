@@ -2,6 +2,7 @@
 // base's registry and detach from it, and what acl_otel_status() reports.
 
 #include "acl_otel.hpp"
+#include "acl_otel_metrics.hpp"
 #include "acl_otel_otlp.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -115,14 +116,89 @@ bool OtelState::Start(DatabaseInstance &db) {
 		policy = make_shared_ptr<OtelPolicy>();
 		policy->SetRules(ParseLevelRules(rules_json));
 	}
+	// spec 003: the metrics side, when the operator has not turned it off. Its transport is the
+	// same endpoint, protocol and headers as the logs'; its timer is its own.
+	Value on;
+	bool metrics_on = !db.TryGetCurrentSetting("acl_otel_metrics", on) || on.IsNull() || on.GetValue<bool>();
+	if (metrics_on) {
+		auto histograms = DefaultHistograms();
+		ApplyBucketDocument(histograms, SettingString(db, "acl_otel_histogram_buckets", ""));
+		metrics = make_shared_ptr<OtelMetrics>(SettingInt64(db, "acl_otel_metrics_interval", 15), std::move(histograms),
+		                                       BuildMetricsExporter(db, string(), Value()));
+		ApplySeriesSettings(db, *metrics);
+		sink->SetMetrics(metrics);
+		metrics->Start(hooks);
+	}
 	hooks->AddSink(sink);
 	hooks->SetSessionPolicy(policy);
 	attached = true;
 	return true;
 }
 
+//! `acl_otel_series` / `_claim_dimension` / `_max_series` / `_series_allowlist` in one place: the
+//! opt-in series of R2.3, rebuilt whenever one of them changes.
+void OtelState::ApplySeriesSettings(DatabaseInstance &db, OtelMetrics &target) {
+	ReconfigureSeries(db, string(), Value(), target);
+}
+
+//! the settings as they will be after this SET (a callback runs before the value is stored), on the
+//! running scrape - the series are rebuilt, so what was counted under the old shape is dropped and
+//! the status says how many series there are now
+void OtelState::ReconfigureSeries(DatabaseInstance &db, const string &changed, const Value &value) {
+	shared_ptr<OtelMetrics> current;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		current = metrics;
+	}
+	if (current) {
+		ReconfigureSeries(db, changed, value, *current);
+	}
+}
+
+void OtelState::ReconfigureSeries(DatabaseInstance &db, const string &changed, const Value &value,
+                                  OtelMetrics &target) {
+	auto text = [&](const char *setting, const char *fallback) {
+		if (changed == setting) {
+			return value.IsNull() ? string() : value.ToString();
+		}
+		return SettingString(db, setting, fallback);
+	};
+	auto names = StringUtil::Split(text("acl_otel_series", ""), ',');
+	for (auto &name : names) {
+		StringUtil::Trim(name);
+	}
+	auto claim = text("acl_otel_claim_dimension", "");
+	auto cap = changed == "acl_otel_max_series" ? (value.IsNull() ? 1000 : value.GetValue<int64_t>())
+	                                            : SettingInt64(db, "acl_otel_max_series", 1000);
+	target.SetSeries(names, claim, NumericCast<idx_t>(MaxValue<int64_t>(cap, 1)),
+	                 ParseSeriesAllowlist(text("acl_otel_series_allowlist", "")));
+}
+
+void OtelState::SetHistogramSums(bool on) {
+	shared_ptr<OtelMetrics> current;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		current = metrics;
+	}
+	if (current) {
+		current->SetHistogramSums(on);
+	}
+}
+
+bool OtelState::FlushMetrics() {
+	shared_ptr<OtelMetrics> current;
+	shared_ptr<acl::AuditHooks> registry;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		current = metrics;
+		registry = hooks;
+	}
+	return current && registry && current->TickNow(*registry);
+}
+
 bool OtelState::Stop() {
 	shared_ptr<OtelSink> ending;
+	shared_ptr<OtelMetrics> ending_metrics;
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		if (!attached) {
@@ -134,6 +210,12 @@ bool OtelState::Stop() {
 			hooks->SetSessionPolicy(nullptr);
 		}
 		ending = std::move(sink);
+		if (metrics) {
+			ending_metrics = std::move(metrics);
+		}
+	}
+	if (ending_metrics) {
+		ending_metrics->Stop(); // outside the lock: its thread may be mid-export
 	}
 	// outside the lock: the worker may be mid-export, and Stop waits for it
 	if (ending) {
@@ -174,8 +256,11 @@ void OtelState::SetRulesJson(const string &json) {
 //! environment alone (a container that sets OTEL_EXPORTER_OTLP_ENDPOINT exports without a SET);
 //! otherwise the stand-in that counts. The SDK's own default (localhost:4318) is deliberately NOT
 //! an endpoint: nothing configured means nothing exported, said so.
-shared_ptr<Exporter> OtelState::BuildExporter(DatabaseInstance &db, const string &changed, const Value &value,
-                                              vector<string> &names) {
+namespace {
+
+//! The settings as they will be after this SET: a callback runs BEFORE the value is stored, so the
+//! one being set is handed in explicitly. Shared by both transports.
+OtlpConfig ConfigAfter(DatabaseInstance &db, const string &changed, const Value &value) {
 	auto config = OtlpConfig::From(db);
 	auto text = [&](const string &name, string &field) {
 		if (changed == name) {
@@ -193,16 +278,47 @@ shared_ptr<Exporter> OtelState::BuildExporter(DatabaseInstance &db, const string
 	if (changed == "acl_otel_insecure") {
 		config.insecure = !value.IsNull() && value.GetValue<bool>();
 	}
-	const char *env_endpoint = std::getenv("OTEL_EXPORTER_OTLP_ENDPOINT");
-	const char *env_logs_endpoint = std::getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT");
-	bool from_env = (env_endpoint && *env_endpoint) || (env_logs_endpoint && *env_logs_endpoint);
+	return config;
+}
+
+//! an endpoint from a setting, or from the standard environment alone (a container that sets
+//! OTEL_EXPORTER_OTLP_ENDPOINT exports without a SET). The SDK's own default (localhost:4318) is
+//! deliberately NOT an endpoint: nothing configured means nothing exported, said so.
+bool HaveEndpoint(const OtlpConfig &config, const char *signal_variable) {
+	if (!config.endpoint.empty()) {
+		return true;
+	}
+	for (auto name : {"OTEL_EXPORTER_OTLP_ENDPOINT", signal_variable}) {
+		const char *env = std::getenv(name);
+		if (env && *env) {
+			return true;
+		}
+	}
+	return false;
+}
+
+} // namespace
+
+shared_ptr<Exporter> OtelState::BuildExporter(DatabaseInstance &db, const string &changed, const Value &value,
+                                              vector<string> &names) {
+	auto config = ConfigAfter(db, changed, value);
 	names.clear();
-	if (config.endpoint.empty() && !from_env) {
+	if (!HaveEndpoint(config, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")) {
 		return make_shared_ptr<NoneExporter>();
 	}
 	auto exporter = make_shared_ptr<OtlpExporter>(config);
 	names = exporter->HeaderNames();
 	return exporter;
+}
+
+//! spec 003: the same endpoint, protocol, TLS and headers as the logs', on the metrics path
+shared_ptr<MetricsExporter> OtelState::BuildMetricsExporter(DatabaseInstance &db, const string &changed,
+                                                            const Value &value) {
+	auto config = ConfigAfter(db, changed, value);
+	if (!HaveEndpoint(config, "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")) {
+		return make_shared_ptr<NoMetricsExporter>("acl_otel_endpoint is empty");
+	}
+	return MakeOtlpMetricsExporter(config);
 }
 
 void OtelState::Reconfigure(DatabaseInstance &db, const string &changed, const Value &value) {
@@ -213,9 +329,14 @@ void OtelState::Reconfigure(DatabaseInstance &db, const string &changed, const V
 	}
 	vector<string> names;
 	auto exporter = BuildExporter(db, changed, value, names); // may throw: the SET is then refused
+	shared_ptr<OtelMetrics> metrics_now;
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		header_names = std::move(names);
+		metrics_now = metrics;
+	}
+	if (metrics_now) {
+		metrics_now->SetExporter(BuildMetricsExporter(db, changed, value));
 	}
 	if (current) {
 		current->SetExporter(std::move(exporter));
@@ -251,6 +372,12 @@ string OtelState::StatusJson(DatabaseInstance &db) {
 	}
 	json += "]";
 	json += ",\"rules\":" + std::to_string(rules ? rules->RuleCount() : 0);
+	shared_ptr<OtelMetrics> metrics_now;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		metrics_now = metrics;
+	}
+	json += ",\"metrics\":" + (metrics_now ? metrics_now->StatusJson() : string("null"));
 	if (current) {
 		auto &stats = current->stats;
 		json += ",\"queue_fill\":" + std::to_string(current->QueueFill());

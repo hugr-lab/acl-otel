@@ -167,6 +167,9 @@ public:
 	void SetSeries(const vector<string> &names, const string &claim, idx_t cap,
 	               const std::map<string, vector<string>> &allowlists);
 	void SetExporter(shared_ptr<MetricsExporter> exporter);
+	//! R2.5: beside every histogram, the `_sum` / `_count` pair a bridge that cannot ingest an OTLP
+	//! histogram still understands. On by default - the Azure bridge is why this exists.
+	void SetHistogramSums(bool on);
 	//! export one tick now (a test, a shutdown); true when the transport took it
 	bool TickNow(acl::AuditHooks &hooks);
 	//! start scraping `hooks` until Stop()
@@ -191,10 +194,18 @@ private:
 	vector<Histogram> histograms; // under `lock`
 	vector<unique_ptr<CappedSeries>> series;
 	string claim_dimension;
+	bool histogram_sums = true;
 	shared_ptr<MetricsExporter> exporter;
 	shared_ptr<acl::AuditHooks> hooks;
 	std::thread worker;
 };
+
+//! spec 003: the OTLP metrics transport (src/acl_otel_otlp_metrics.cpp), built from the same config
+//! as the logs' - declared here so acl_otel_state.cpp needs no SDK header of its own
+shared_ptr<MetricsExporter> MakeOtlpMetricsExporter(const struct OtlpConfig &config);
+//! `acl_otel_series_allowlist`: {"acl.decisions.by_role": ["analyst", ...]}. Throws
+//! InvalidInputException naming what is wrong; "" is no allowlist.
+std::map<string, vector<string>> ParseSeriesAllowlist(const string &json);
 
 } // namespace acl_otel
 } // namespace duckdb

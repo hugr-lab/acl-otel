@@ -3,7 +3,7 @@
 # group: [sql]
 
 statement ok
-LOAD '__BUILD_DIRECTORY__/extension/acl_otel/acl_otel.duckdb_extension';
+LOAD '{BUILD_DIRECTORY}/extension/acl_otel/acl_otel.duckdb_extension';
 
 query I
 SELECT acl_otel_status() LIKE '%"exporter":"none (acl_otel_endpoint is empty)"%';

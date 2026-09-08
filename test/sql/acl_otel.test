@@ -4,7 +4,7 @@
 
 # a DONT_LINK loadable is invisible to `require`: loaded by build path instead
 statement ok
-LOAD '__BUILD_DIRECTORY__/extension/acl_otel/acl_otel.duckdb_extension';
+LOAD '{BUILD_DIRECTORY}/extension/acl_otel/acl_otel.duckdb_extension';
 
 query I
 SELECT acl_otel_version() IS NOT NULL;

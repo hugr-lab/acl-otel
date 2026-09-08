@@ -20,10 +20,11 @@ include_directories(src/include duckdb-acl/src/include duckdb/third_party/yyjson
 # as the base links Arrow
 find_package(opentelemetry-cpp CONFIG REQUIRED)
 set(ACL_OTEL_SDK_LIBS opentelemetry-cpp::otlp_http_log_record_exporter opentelemetry-cpp::otlp_grpc_log_record_exporter
-                      opentelemetry-cpp::logs opentelemetry-cpp::resources)
+                      opentelemetry-cpp::otlp_http_metric_exporter opentelemetry-cpp::otlp_grpc_metrics_exporter
+                      opentelemetry-cpp::logs opentelemetry-cpp::metrics opentelemetry-cpp::resources)
 
 set(EXTENSION_SOURCES src/acl_otel_extension.cpp src/acl_otel_rules.cpp src/acl_otel_sink.cpp src/acl_otel_state.cpp
-                      src/acl_otel_otlp.cpp)
+                      src/acl_otel_otlp.cpp src/acl_otel_metrics.cpp src/acl_otel_otlp_metrics.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
@@ -36,7 +37,8 @@ target_link_libraries(${LOADABLE_EXTENSION_NAME} ${ACL_OTEL_SDK_LIBS})
 # demand by `make test-cpp`, never by a plain `make`
 find_package(gRPC CONFIG REQUIRED)
 add_executable(acl_otel_test_otlp EXCLUDE_FROM_ALL test/cpp/test_acl_otel_otlp.cpp src/acl_otel_otlp.cpp
-               src/acl_otel_sink.cpp src/acl_otel_state.cpp src/acl_otel_rules.cpp)
+               src/acl_otel_sink.cpp src/acl_otel_state.cpp src/acl_otel_rules.cpp src/acl_otel_metrics.cpp
+               src/acl_otel_otlp_metrics.cpp)
 target_include_directories(acl_otel_test_otlp PRIVATE test/cpp ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib)
 target_link_libraries(acl_otel_test_otlp duckdb ${ACL_OTEL_SDK_LIBS} opentelemetry-cpp::proto
                       opentelemetry-cpp::proto_grpc gRPC::grpc++)

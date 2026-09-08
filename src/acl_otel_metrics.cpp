@@ -127,6 +127,54 @@ void ApplyBucketDocument(vector<Histogram> &histograms, const string &json) {
 	}
 }
 
+std::map<string, vector<string>> ParseSeriesAllowlist(const string &json) {
+	std::map<string, vector<string>> out;
+	auto trimmed = json;
+	StringUtil::Trim(trimmed);
+	if (trimmed.empty()) {
+		return out;
+	}
+	auto document = yyjson_read(trimmed.c_str(), trimmed.size(), 0);
+	if (!document) {
+		throw InvalidInputException("acl_otel_series_allowlist is not a JSON document");
+	}
+	auto root = yyjson_doc_get_root(document);
+	if (!yyjson_is_obj(root)) {
+		yyjson_doc_free(document);
+		throw InvalidInputException("acl_otel_series_allowlist expected a JSON object of instrument -> values");
+	}
+	string refusal;
+	yyjson_obj_iter iter;
+	yyjson_obj_iter_init(root, &iter);
+	while (auto key = yyjson_obj_iter_next(&iter)) {
+		string name = yyjson_get_str(key);
+		auto value = yyjson_obj_iter_get_val(key);
+		if (!yyjson_is_arr(value)) {
+			refusal = "acl_otel_series_allowlist: '" + name + "' needs an array of values";
+			break;
+		}
+		vector<string> values;
+		size_t index, max;
+		yyjson_val *item;
+		yyjson_arr_foreach(value, index, max, item) {
+			if (!yyjson_is_str(item)) {
+				refusal = "acl_otel_series_allowlist: a value of '" + name + "' is not a string";
+				break;
+			}
+			values.emplace_back(yyjson_get_str(item));
+		}
+		if (!refusal.empty()) {
+			break;
+		}
+		out[name] = std::move(values);
+	}
+	yyjson_doc_free(document);
+	if (!refusal.empty()) {
+		throw InvalidInputException(refusal);
+	}
+	return out;
+}
+
 CappedSeries::CappedSeries(string name_p, string label_p, idx_t cap_p)
     : name(std::move(name_p)), label(std::move(label_p)), cap(cap_p == 0 ? 1 : cap_p) {
 }
@@ -263,6 +311,11 @@ void OtelMetrics::SetExporter(shared_ptr<MetricsExporter> exporter_p) {
 	exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoMetricsExporter>("no endpoint");
 }
 
+void OtelMetrics::SetHistogramSums(bool on) {
+	std::lock_guard<std::mutex> guard(lock);
+	histogram_sums = on;
+}
+
 void OtelMetrics::Observe(const acl::AuditEvent &event) {
 	std::lock_guard<std::mutex> guard(lock);
 	auto record = [&](const char *name, const Labels &labels, double value) {
@@ -335,8 +388,10 @@ MetricsSnapshot OtelMetrics::Build(acl::AuditHooks &hooks) {
 	};
 	take(counters, true);
 	take(gauges, false);
+	bool with_sums = false;
 	{
 		std::lock_guard<std::mutex> guard(lock);
+		with_sums = histogram_sums;
 		snapshot.histograms = histograms; // a copy: the accumulation goes on while this is exported
 		for (auto &one : series) {
 			for (auto &entry : one->Points()) {
@@ -348,6 +403,29 @@ MetricsSnapshot OtelMetrics::Build(acl::AuditHooks &hooks) {
 				point.unit = "1";
 				point.description = "decisions, by a label the operator asked for (spec 003)";
 				snapshot.points.push_back(std::move(point));
+			}
+		}
+	}
+	// R2.5: the pair a bridge that cannot ingest a histogram still understands
+	if (with_sums) {
+		for (auto &histogram : snapshot.histograms) {
+			for (auto &point : histogram.points) {
+				MetricPoint sum;
+				sum.name = histogram.name + "_sum";
+				sum.labels = point.first;
+				sum.value = static_cast<int64_t>(point.second.sum);
+				sum.monotonic = true;
+				sum.unit = histogram.unit;
+				sum.description = histogram.description + " (sum)";
+				snapshot.points.push_back(std::move(sum));
+				MetricPoint count;
+				count.name = histogram.name + "_count";
+				count.labels = point.first;
+				count.value = point.second.count;
+				count.monotonic = true;
+				count.unit = "1";
+				count.description = histogram.description + " (count)";
+				snapshot.points.push_back(std::move(count));
 			}
 		}
 	}

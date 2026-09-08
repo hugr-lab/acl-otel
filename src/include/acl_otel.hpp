@@ -40,6 +40,9 @@ struct LevelRule {
 vector<LevelRule> ParseLevelRules(const string &json);
 bool RuleMatches(const LevelRule &rule, const acl::Principal &principal, const string &door);
 
+class OtelMetrics;     // spec 003, acl_otel_metrics.hpp
+class MetricsExporter; // its transport seam
+
 //! The extension's own numbers (R7): every event received, exported, dropped (by why), failed.
 struct Stats {
 	std::atomic<int64_t> received {0};
@@ -91,6 +94,9 @@ public:
 
 	void OnEvent(const acl::AuditEvent &event) override;
 	void Flush() override;
+	//! spec 003: the metrics accumulators see every event this sink receives, before the queue -
+	//! O(bounds) and one short lock, so R10.1 holds. Null while metrics are off.
+	void SetMetrics(shared_ptr<OtelMetrics> metrics);
 	//! Flush that answers: true when what was queued at the call was exported (or failed and
 	//! counted) within the bound, false when the transport is still on it or the sink is stopping
 	bool FlushNow();
@@ -120,6 +126,7 @@ private:
 	std::condition_variable drained;
 	std::deque<acl::AuditEvent> queue;
 	shared_ptr<Exporter> exporter;
+	shared_ptr<OtelMetrics> metrics; // under `lock`, spec 003
 	bool stopping = false;
 	bool flush_requested = false;
 	std::thread worker;
@@ -166,6 +173,8 @@ public:
 	string AttachError();
 	//! drain the queue now (acl_otel_flush): false when not attached or the bound ran out
 	bool Flush();
+	//! spec 003: export one metrics tick now (acl_otel_metrics_flush); false when metrics are off
+	bool FlushMetrics();
 	void SetRulesJson(const string &json); // parses, then hot-reloads the policy (R3.1)
 	//! spec 002: rebuild the transport from the settings - `changed` names the setting whose new
 	//! value is `value` (a SET's callback runs before the value is stored) - and swap it into the
@@ -177,16 +186,26 @@ public:
 	shared_ptr<OtelPolicy> Policy();
 	//! the header names the transport carries (never a value), '' when there is no transport
 	vector<string> HeaderNames();
+	//! spec 003: the opt-in series and their cap, read from the settings onto a live scrape
+	void ApplySeriesSettings(DatabaseInstance &db, OtelMetrics &target);
+	//! ... after a SET, with the value being set (the callback runs before it is stored)
+	void ReconfigureSeries(DatabaseInstance &db, const string &changed, const Value &value);
+	void ReconfigureSeries(DatabaseInstance &db, const string &changed, const Value &value, OtelMetrics &target);
+	//! R2.5's pair, on a running scrape
+	void SetHistogramSums(bool on);
 
 private:
 	//! lock-free (Start calls it under the lock); `names` receives the transport's header names
 	shared_ptr<Exporter> BuildExporter(DatabaseInstance &db, const string &changed, const Value &value,
 	                                   vector<string> &names);
+	//! spec 003: the metrics transport, from the same settings as the logs'
+	shared_ptr<MetricsExporter> BuildMetricsExporter(DatabaseInstance &db, const string &changed, const Value &value);
 	vector<string> header_names; // under `lock`
 	string attach_error;         // under `lock`: why the last Start refused to attach, '' when it did
 	std::mutex lock;
 	shared_ptr<acl::AuditHooks> hooks; // held: the registry outlives our sink's removal
 	shared_ptr<OtelSink> sink;
+	shared_ptr<OtelMetrics> metrics; // spec 003, null while acl_otel_metrics is off
 	shared_ptr<OtelPolicy> policy;
 	bool attached = false;
 	string rules_json;
