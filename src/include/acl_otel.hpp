@@ -20,6 +20,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -43,6 +44,32 @@ bool RuleMatches(const LevelRule &rule, const acl::Principal &principal, const s
 class OtelMetrics;     // spec 003, acl_otel_metrics.hpp
 class MetricsExporter; // its transport seam
 
+//! Spec 005: which `allowed` statements are kept. A ratio ('0.1'), or a JSON object per role
+//! ({"analyst": 0.05, "*": 0.5}) where `*` covers a role the object does not name; a principal with
+//! several roles is judged by the HIGHEST ratio any of them names, because sampling is a cost
+//! control and a role an operator kept whole should not be thinned by another the principal holds.
+class Sampler {
+public:
+	//! Throws InvalidInputException when the document is neither a ratio in [0, 1] nor an object of
+	//! role -> ratio. '' and '1' keep everything.
+	explicit Sampler(const string &document);
+	Sampler() = default;
+
+	//! false = this event is sampled away. Only an `allowed` STATEMENT is eligible; a refusal, an
+	//! admin decision, a session, a door, an ingest, a policy or a keys event always passes (R6.1).
+	bool Keep(const acl::AuditEvent &event) const;
+	//! the ratio this principal's roles earn, for the status
+	double RatioFor(const vector<string> &roles) const;
+	bool KeepsEverything() const {
+		return everything;
+	}
+
+private:
+	bool everything = true;
+	double fallback = 1.0;            // the ratio with no role named, or `*`
+	std::map<string, double> by_role; // the roles the document names
+};
+
 //! The extension's own numbers (R7): every event received, exported, dropped (by why), failed.
 struct Stats {
 	std::atomic<int64_t> received {0};
@@ -50,6 +77,7 @@ struct Stats {
 	std::atomic<int64_t> exported {0};
 	std::atomic<int64_t> dropped_queue {0};
 	std::atomic<int64_t> dropped_no_exporter {0};
+	std::atomic<int64_t> sampled {0}; // spec 005: allowed statements kept out by ratio, not by failure
 	std::atomic<int64_t> export_errors {0};
 	std::atomic<int64_t> batches {0};
 	std::atomic<int64_t> last_export_us {0}; // epoch microseconds of the last successful export
@@ -97,6 +125,10 @@ public:
 	//! spec 003: the metrics accumulators see every event this sink receives, before the queue -
 	//! O(bounds) and one short lock, so R10.1 holds. Null while metrics are off.
 	void SetMetrics(shared_ptr<OtelMetrics> metrics);
+	//! spec 005: the sampler, applied AFTER the metrics have seen the event - what thins is the
+	//! record a backend stores, never the number the node counts
+	void SetSampler(shared_ptr<Sampler> sampler);
+	double SampleRatio(const vector<string> &roles);
 	//! Flush that answers: true when what was queued at the call was exported (or failed and
 	//! counted) within the bound, false when the transport is still on it or the sink is stopping
 	bool FlushNow();
@@ -127,6 +159,7 @@ private:
 	std::deque<acl::AuditEvent> queue;
 	shared_ptr<Exporter> exporter;
 	shared_ptr<OtelMetrics> metrics; // under `lock`, spec 003
+	shared_ptr<Sampler> sampler;     // under `lock`, spec 005; null = keep everything
 	bool stopping = false;
 	bool flush_requested = false;
 	std::thread worker;
@@ -176,6 +209,8 @@ public:
 	//! spec 003: export one metrics tick now (acl_otel_metrics_flush); false when metrics are off
 	bool FlushMetrics();
 	void SetRulesJson(const string &json); // parses, then hot-reloads the policy (R3.1)
+	//! spec 005: the sampler from `acl_otel_sample_allowed`, parsed (and refused) at the SET
+	void SetSampling(const string &document);
 	//! spec 002: rebuild the transport from the settings - `changed` names the setting whose new
 	//! value is `value` (a SET's callback runs before the value is stored) - and swap it into the
 	//! sink; an endpoint from neither a setting nor the environment means the stand-in
@@ -200,8 +235,9 @@ private:
 	                                   vector<string> &names);
 	//! spec 003: the metrics transport, from the same settings as the logs'
 	shared_ptr<MetricsExporter> BuildMetricsExporter(DatabaseInstance &db, const string &changed, const Value &value);
-	vector<string> header_names; // under `lock`
-	string attach_error;         // under `lock`: why the last Start refused to attach, '' when it did
+	vector<string> header_names;    // under `lock`
+	string sampling_document = "1"; // under `lock`, spec 005: kept for a restart
+	string attach_error;            // under `lock`: why the last Start refused to attach, '' when it did
 	std::mutex lock;
 	shared_ptr<acl::AuditHooks> hooks; // held: the registry outlives our sink's removal
 	shared_ptr<OtelSink> sink;

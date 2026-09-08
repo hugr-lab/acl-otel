@@ -255,6 +255,19 @@ void OtelState::SetRulesJson(const string &json) {
 	policy->SetRules(std::move(rules));
 }
 
+void OtelState::SetSampling(const string &document) {
+	auto sampler = make_shared_ptr<Sampler>(document); // refused here, at the SET, never on an event
+	shared_ptr<OtelSink> current;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		sampling_document = document;
+		current = sink;
+	}
+	if (current) {
+		current->SetSampler(std::move(sampler));
+	}
+}
+
 //! spec 002: an OTLP transport when an endpoint is configured - by a setting, or by the standard
 //! environment alone (a container that sets OTEL_EXPORTER_OTLP_ENDPOINT exports without a SET);
 //! otherwise the stand-in that counts. The SDK's own default (localhost:4318) is deliberately NOT
@@ -275,6 +288,9 @@ OtlpConfig ConfigAfter(DatabaseInstance &db, const string &changed, const Value 
 	text("acl_otel_certificate", config.certificate);
 	text("acl_otel_service_name", config.service_name);
 	text("acl_otel_resource_attributes", config.resource_attributes);
+	if (changed == "acl_otel_claim_attributes") {
+		config.claim_attributes = ParseClaimAttributes(value.IsNull() ? string() : value.ToString());
+	}
 	if (changed == "acl_otel_timeout") {
 		config.timeout_s = value.IsNull() ? 0 : value.GetValue<int64_t>();
 	}
@@ -392,6 +408,7 @@ string OtelState::StatusJson(DatabaseInstance &db) {
 		json += ",\"dropped\":{\"queue\":" + std::to_string(stats.dropped_queue.load()) +
 		        ",\"no_exporter\":" + std::to_string(stats.dropped_no_exporter.load()) + "}";
 		json += ",\"export_errors\":" + std::to_string(stats.export_errors.load());
+		json += ",\"sampled\":" + std::to_string(stats.sampled.load());
 		auto last = stats.last_export_us.load();
 		json += ",\"last_export_us\":" + (last > 0 ? std::to_string(last) : string("null"));
 		auto last_error = current->LastError();

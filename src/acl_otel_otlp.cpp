@@ -84,6 +84,31 @@ QuietLogHandler &SdkLog() {
 
 } // namespace
 
+vector<string> ParseClaimAttributes(const string &names) {
+	vector<string> out;
+	for (auto &item : StringUtil::Split(names, ',')) {
+		auto name = item;
+		StringUtil::Trim(name);
+		if (name.empty()) {
+			continue;
+		}
+		if (out.size() >= 16) {
+			throw InvalidInputException(
+			    "acl_otel_claim_attributes names more than 16 claims; a record carries dimensions, not a document");
+		}
+		out.push_back(name);
+	}
+	return out;
+}
+
+string ClaimValue(const string &value) {
+	// a claim is an identifier in practice; one that is a document is a mistake we make visible
+	if (value.size() <= 256) {
+		return value;
+	}
+	return value.substr(0, 253) + "...";
+}
+
 string MaskUserinfo(const string &url) {
 	auto scheme = url.find("://");
 	auto start = scheme == string::npos ? 0 : scheme + 3;
@@ -246,6 +271,7 @@ OtlpConfig OtlpConfig::From(DatabaseInstance &db) {
 	config.certificate = SettingString(db, "acl_otel_certificate", "");
 	config.service_name = SettingString(db, "acl_otel_service_name", "duckdb-acl");
 	config.resource_attributes = SettingString(db, "acl_otel_resource_attributes", "");
+	config.claim_attributes = ParseClaimAttributes(SettingString(db, "acl_otel_claim_attributes", ""));
 	// the node id is the base's (spec 069) when acl is loaded; else the same shape, ours
 	config.instance_id = SettingString(db, "acl_node_id", "");
 	if (config.instance_id.empty()) {
@@ -348,7 +374,7 @@ string ObjectsJson(const acl::AuditEvent &event) {
 	return CloseList(json, skipped);
 }
 
-void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &event) {
+void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &event, const vector<string> &claims) {
 	using opentelemetry::common::SystemTimestamp;
 	record.SetTimestamp(SystemTimestamp(std::chrono::microseconds(event.ts_us)));
 	record.SetObservedTimestamp(SystemTimestamp(std::chrono::system_clock::now()));
@@ -404,6 +430,14 @@ void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &even
 	number("acl.rows", event.rows);
 	number("acl.duration_us", event.duration_us);
 	text("acl.detail", event.detail);
+	// R5.1: a claim value is exported only when the operator named its claim, and nothing else in
+	// principal.claims ever reaches a record
+	for (auto &name : claims) {
+		auto found = event.principal.claims.find(name);
+		if (found != event.principal.claims.end() && !found->second.empty()) {
+			text(("acl.claim." + name).c_str(), ClaimValue(found->second));
+		}
+	}
 	text("acl.level", acl::AuditLevelName(event.level));
 	number("acl.seq", event.seq);
 	text("acl.node", event.node);
@@ -474,7 +508,7 @@ bool OtlpExporter::Export(const vector<acl::AuditEvent> &batch, string &error) {
 		auto record = exporter->MakeRecordable();
 		record->SetResource(*resource);
 		record->SetInstrumentationScope(*scope);
-		Fill(*record, event);
+		Fill(*record, event, config.claim_attributes);
 		records.push_back(std::move(record));
 	}
 	SdkLog().Take(); // what the SDK says about THIS export, not an earlier one

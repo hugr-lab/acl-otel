@@ -43,6 +43,20 @@ void OtelSink::SetMetrics(shared_ptr<OtelMetrics> metrics_p) {
 	metrics = std::move(metrics_p);
 }
 
+void OtelSink::SetSampler(shared_ptr<Sampler> sampler_p) {
+	std::lock_guard<std::mutex> guard(lock);
+	sampler = std::move(sampler_p);
+}
+
+double OtelSink::SampleRatio(const vector<string> &roles) {
+	shared_ptr<Sampler> ratio;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		ratio = sampler;
+	}
+	return ratio ? ratio->RatioFor(roles) : 1.0;
+}
+
 void OtelSink::OnEvent(const acl::AuditEvent &event) {
 	stats.received++;
 	{
@@ -55,6 +69,18 @@ void OtelSink::OnEvent(const acl::AuditEvent &event) {
 		}
 		if (observers) {
 			observers->Observe(event);
+		}
+	}
+	{
+		// spec 005: what a backend stores may be thinned; what the node counted above never is
+		shared_ptr<Sampler> ratio;
+		{
+			std::lock_guard<std::mutex> guard(lock);
+			ratio = sampler;
+		}
+		if (ratio && !ratio->Keep(event)) {
+			stats.sampled++;
+			return;
 		}
 	}
 	{

@@ -24,7 +24,8 @@ set(ACL_OTEL_SDK_LIBS opentelemetry-cpp::otlp_http_log_record_exporter opentelem
                       opentelemetry-cpp::logs opentelemetry-cpp::metrics opentelemetry-cpp::resources)
 
 set(EXTENSION_SOURCES src/acl_otel_extension.cpp src/acl_otel_rules.cpp src/acl_otel_sink.cpp src/acl_otel_state.cpp
-                      src/acl_otel_otlp.cpp src/acl_otel_metrics.cpp src/acl_otel_otlp_metrics.cpp)
+                      src/acl_otel_otlp.cpp src/acl_otel_metrics.cpp src/acl_otel_otlp_metrics.cpp
+                      src/acl_otel_sampling.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
@@ -38,7 +39,7 @@ target_link_libraries(${LOADABLE_EXTENSION_NAME} ${ACL_OTEL_SDK_LIBS})
 find_package(gRPC CONFIG REQUIRED)
 add_executable(acl_otel_test_otlp EXCLUDE_FROM_ALL test/cpp/test_acl_otel_otlp.cpp src/acl_otel_otlp.cpp
                src/acl_otel_sink.cpp src/acl_otel_state.cpp src/acl_otel_rules.cpp src/acl_otel_metrics.cpp
-               src/acl_otel_otlp_metrics.cpp)
+               src/acl_otel_otlp_metrics.cpp src/acl_otel_sampling.cpp)
 target_include_directories(acl_otel_test_otlp PRIVATE test/cpp ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib)
 target_link_libraries(acl_otel_test_otlp duckdb ${ACL_OTEL_SDK_LIBS} opentelemetry-cpp::proto
                       opentelemetry-cpp::proto_grpc gRPC::grpc++)
@@ -46,7 +47,7 @@ target_link_libraries(acl_otel_test_otlp duckdb ${ACL_OTEL_SDK_LIBS} opentelemet
 # spec 003's twin: the metrics transport against fake receivers of its own
 add_executable(acl_otel_test_metrics_otlp EXCLUDE_FROM_ALL test/cpp/test_acl_otel_metrics_otlp.cpp
                src/acl_otel_otlp.cpp src/acl_otel_otlp_metrics.cpp src/acl_otel_metrics.cpp src/acl_otel_sink.cpp
-               src/acl_otel_state.cpp src/acl_otel_rules.cpp)
+               src/acl_otel_state.cpp src/acl_otel_rules.cpp src/acl_otel_sampling.cpp)
 target_include_directories(acl_otel_test_metrics_otlp PRIVATE test/cpp
                            ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib)
 target_link_libraries(acl_otel_test_metrics_otlp duckdb ${ACL_OTEL_SDK_LIBS} opentelemetry-cpp::proto
