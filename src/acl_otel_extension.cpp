@@ -11,6 +11,7 @@
 #include "acl_otel_extension.hpp"
 
 #include "acl_otel.hpp"
+#include "acl_otel_otlp.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -54,9 +55,41 @@ void AclOtelStartFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->Start(db)), count_t(args.size()));
 }
 
+void AclOtelFlushFunc(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &db = InstanceOf(state);
+	result.Reference(Value::BOOLEAN(OtelState::Of(db)->Flush()), count_t(args.size()));
+}
+
 void AclOtelStopFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &db = InstanceOf(state);
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->Stop()), count_t(args.size()));
+}
+
+//! the transport settings (spec 002): a SET's callback is a plain function pointer, so each setting
+//! is one instance of the template below, named by its index into this table
+enum class TransportSetting : uint8_t {
+	ENDPOINT,
+	PROTOCOL,
+	TIMEOUT,
+	INSECURE,
+	CERTIFICATE,
+	RESOURCE_ATTRIBUTES,
+	SERVICE_NAME
+};
+const char *const TRANSPORT_SETTING_NAMES[] = {"acl_otel_endpoint",    "acl_otel_protocol",
+                                               "acl_otel_timeout",     "acl_otel_insecure",
+                                               "acl_otel_certificate", "acl_otel_resource_attributes",
+                                               "acl_otel_service_name"};
+
+template <TransportSetting SETTING>
+void TransportSet(ClientContext &context, SetScope scope, Value &parameter) {
+	const char *setting = TRANSPORT_SETTING_NAMES[static_cast<uint8_t>(SETTING)];
+	RequireGlobal(setting, scope);
+	if (SETTING == TransportSetting::PROTOCOL && !acl_otel::OtlpConfig::ValidProtocol(parameter.ToString())) {
+		throw InvalidInputException("acl_otel_protocol accepts 'http/protobuf' or 'grpc', not '%s'",
+		                            parameter.ToString());
+	}
+	OtelState::Of(*context.db)->Reconfigure(*context.db, setting, parameter);
 }
 
 void LoadInternal(ExtensionLoader &loader) {
@@ -64,12 +97,35 @@ void LoadInternal(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(db);
 
 	// R9.1: every setting GLOBAL, acl_otel_*, and never a principal's (the base's SET gate)
+	// spec 002: the transport. A SET's callback runs before the value is stored, so the new value
+	// is handed to the rebuild explicitly; a config the SDK refuses fails the SET
+	config.AddExtensionOption("acl_otel_endpoint",
+	                          "acl_otel: the OTLP endpoint - http(s)://host:4318 for http/protobuf (/v1/logs is "
+	                          "appended), host:4317 for grpc; '' = the OTEL_EXPORTER_OTLP_ENDPOINT environment, and "
+	                          "with neither nothing is exported and every drop is counted (spec 002)",
+	                          LogicalType::VARCHAR, Value(""), TransportSet<TransportSetting::ENDPOINT>,
+	                          SetScope::GLOBAL);
 	config.AddExtensionOption(
-	    "acl_otel_endpoint",
-	    "acl_otel: the OTLP endpoint events and metrics are exported to; '' exports nothing "
-	    "and counts what it drops (spec 002 fills the transport)",
-	    LogicalType::VARCHAR, Value(""),
-	    [](ClientContext &, SetScope scope, Value &) { RequireGlobal("acl_otel_endpoint", scope); }, SetScope::GLOBAL);
+	    "acl_otel_protocol", "acl_otel: http/protobuf or grpc; '' = OTEL_EXPORTER_OTLP_PROTOCOL, else http/protobuf",
+	    LogicalType::VARCHAR, Value(""), TransportSet<TransportSetting::PROTOCOL>, SetScope::GLOBAL);
+	config.AddExtensionOption("acl_otel_timeout",
+	                          "acl_otel: seconds an export may take before it fails; 0 = OTEL_EXPORTER_OTLP_TIMEOUT, "
+	                          "else the SDK's 10",
+	                          LogicalType::BIGINT, Value::BIGINT(0), TransportSet<TransportSetting::TIMEOUT>,
+	                          SetScope::GLOBAL);
+	config.AddExtensionOption("acl_otel_insecure",
+	                          "acl_otel: grpc without TLS; false = the SDK decides (the endpoint's scheme, "
+	                          "OTEL_EXPORTER_OTLP_INSECURE)",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(false), TransportSet<TransportSetting::INSECURE>,
+	                          SetScope::GLOBAL);
+	config.AddExtensionOption("acl_otel_certificate",
+	                          "acl_otel: a CA certificate file for TLS; '' = OTEL_EXPORTER_OTLP_CERTIFICATE, else "
+	                          "the system's",
+	                          LogicalType::VARCHAR, Value(""), TransportSet<TransportSetting::CERTIFICATE>,
+	                          SetScope::GLOBAL);
+	config.AddExtensionOption("acl_otel_resource_attributes",
+	                          "acl_otel: extra resource attributes on every export, k=v,k=v", LogicalType::VARCHAR,
+	                          Value(""), TransportSet<TransportSetting::RESOURCE_ATTRIBUTES>, SetScope::GLOBAL);
 	config.AddExtensionOption(
 	    "acl_otel_level_rules",
 	    "acl_otel: the audit level per role / subject / issuer / door, a JSON array of rules, first match "
@@ -100,11 +156,9 @@ void LoadInternal(ExtensionLoader &loader) {
 	    LogicalType::BIGINT, Value::BIGINT(5),
 	    [](ClientContext &, SetScope scope, Value &) { RequireGlobal("acl_otel_flush_interval", scope); },
 	    SetScope::GLOBAL);
-	config.AddExtensionOption(
-	    "acl_otel_service_name", "acl_otel: the OTel service.name on every export (spec 002)", LogicalType::VARCHAR,
-	    Value("duckdb-acl"),
-	    [](ClientContext &, SetScope scope, Value &) { RequireGlobal("acl_otel_service_name", scope); },
-	    SetScope::GLOBAL);
+	config.AddExtensionOption("acl_otel_service_name", "acl_otel: the OTel service.name on every export (spec 002)",
+	                          LogicalType::VARCHAR, Value("duckdb-acl"), TransportSet<TransportSetting::SERVICE_NAME>,
+	                          SetScope::GLOBAL);
 
 	auto register_scalar = [&](const char *name, const LogicalType &returns, scalar_function_t fn) {
 		ScalarFunction function(Identifier(name), {}, returns, fn);
@@ -117,6 +171,9 @@ void LoadInternal(ExtensionLoader &loader) {
 	register_scalar("acl_otel_status", LogicalType::VARCHAR, AclOtelStatusFunc);
 	register_scalar("acl_otel_start", LogicalType::BOOLEAN, AclOtelStartFunc);
 	register_scalar("acl_otel_stop", LogicalType::BOOLEAN, AclOtelStopFunc);
+	// spec 002: export what is queued now and wait for it (bounded) - before a shutdown, or to see
+	// in the status what the collector answered
+	register_scalar("acl_otel_flush", LogicalType::BOOLEAN, AclOtelFlushFunc);
 
 	// R8.1: attached at load, before or after acl - the registry is shared through the cache
 	OtelState::Of(db)->Start(db);

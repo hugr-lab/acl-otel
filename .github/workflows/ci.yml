@@ -46,9 +46,11 @@ jobs:
   build-test-linux:
     name: Build + test (linux_amd64)
     runs-on: ubuntu-24.04
+    timeout-minutes: 150
     env:
       GEN: ninja
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -63,6 +65,22 @@ jobs:
       # that can tell when that copy drifts from duckdb's
       - name: clang-format config is in sync with duckdb
         run: diff <(tail -n +2 .clang-format) duckdb/.clang-format
+
+      # the OpenTelemetry SDK with its OTLP exporters (spec 002) comes from vcpkg - grpc, protobuf,
+      # abseil, curl behind it - through the merged-manifest flow; a cold build of those is the
+      # better part of an hour, so the binary cache is what keeps a PR run short. Keyed on
+      # vcpkg.json: a feature added there is a change of dependencies.
+      - name: Setup vcpkg
+        run: make vcpkg-setup
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v6
+        with:
+          path: vcpkg_bincache
+          key: vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-
+            vcpkg-bincache-linux_amd64-
 
       - name: Restore ccache
         uses: actions/cache@v6
@@ -82,8 +100,12 @@ jobs:
       - name: The artifact loads
         run: scripts/ci/smoke_load.sh
 
-      # the floor keeps a suite that silently skipped everything from passing; the beside-acl file
-      # skips here by design (no ACL_EXT on this runner - the base's artifact is the e2e's, spec 001)
+      # vcpkg's cache only grows; drop two-week-old archives before actions/cache saves it
+      - name: Prune the vcpkg binary cache
+        if: always()
+        run: scripts/ci/prune_vcpkg_cache.sh
+
+      # the floor keeps a suite that silently skipped everything from passing
       - name: Unit suites
         run: |
           build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
@@ -91,6 +113,23 @@ jobs:
 
       - name: C++ tests
         run: make test-cpp
+
+      # spec 001's proof: two loadables on one instance - the base's REAL artifact, from duckdb-acl's
+      # latest green main run (same duckdb pin: bumped together, CLAUDE.md), beside ours. The
+      # beside-acl file needs ACL_EXT and skips without it, so a run without this step proves the
+      # wiring on nobody.
+      - name: Fetch the base's artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/fetch_base.sh linux_amd64 base
+
+      - name: Beside acl
+        env:
+          ACL_EXT: ${{ github.workspace }}/base/acl.duckdb_extension
+        run: |
+          scripts/ci/smoke_load.sh
+          build/release/test/unittest test/sql/acl_otel_beside_acl.test 2>&1 | tee beside.log
+          scripts/ci/assert_ran.sh beside.log 1 1
 
       - name: Upload extension artifact
         if: github.event_name != 'pull_request'
@@ -103,10 +142,12 @@ jobs:
   build-test-osx:
     name: Build + test (osx_arm64)
     runs-on: macos-14
+    timeout-minutes: 150
     if: ${{ github.event_name != 'pull_request' }}
     env:
       GEN: ninja
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -114,6 +155,18 @@ jobs:
 
       - name: Install build dependencies
         run: brew install ninja ccache
+
+      - name: Setup vcpkg
+        run: make vcpkg-setup
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v6
+        with:
+          path: vcpkg_bincache
+          key: vcpkg-bincache-osx_arm64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-bincache-osx_arm64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-
+            vcpkg-bincache-osx_arm64-
 
       - name: Restore ccache
         uses: actions/cache@v6
@@ -132,6 +185,10 @@ jobs:
       - name: The artifact loads
         run: scripts/ci/smoke_load.sh
 
+      - name: Prune the vcpkg binary cache
+        if: always()
+        run: scripts/ci/prune_vcpkg_cache.sh
+
       - name: Unit suites
         run: |
           build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
@@ -139,6 +196,19 @@ jobs:
 
       - name: C++ tests
         run: make test-cpp
+
+      - name: Fetch the base's artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/fetch_base.sh osx_arm64 base
+
+      - name: Beside acl
+        env:
+          ACL_EXT: ${{ github.workspace }}/base/acl.duckdb_extension
+        run: |
+          scripts/ci/smoke_load.sh
+          build/release/test/unittest test/sql/acl_otel_beside_acl.test 2>&1 | tee beside.log
+          scripts/ci/assert_ran.sh beside.log 1 1
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7

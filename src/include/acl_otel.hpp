@@ -43,6 +43,7 @@ bool RuleMatches(const LevelRule &rule, const acl::Principal &principal, const s
 //! The extension's own numbers (R7): every event received, exported, dropped (by why), failed.
 struct Stats {
 	std::atomic<int64_t> received {0};
+	std::atomic<int64_t> exported_batches_failed {0};
 	std::atomic<int64_t> exported {0};
 	std::atomic<int64_t> dropped_queue {0};
 	std::atomic<int64_t> dropped_no_exporter {0};
@@ -90,11 +91,15 @@ public:
 
 	void OnEvent(const acl::AuditEvent &event) override;
 	void Flush() override;
+	//! Flush that answers: true when what was queued at the call was exported (or failed and
+	//! counted) within the bound, false when the transport is still on it or the sink is stopping
+	bool FlushNow();
 
 	//! swap the transport (a setting changed); the worker sees it on its next batch, and a batch in
 	//! flight finishes on the transport it started with (the pointer is shared)
 	void SetExporter(shared_ptr<Exporter> exporter);
 	string ExporterName();
+	string LastError();
 	idx_t QueueFill();
 	idx_t QueueSize() const {
 		return queue_size;
@@ -155,13 +160,25 @@ public:
 	bool Start(DatabaseInstance &db);
 	bool Stop();
 	bool Attached();
+	//! drain the queue now (acl_otel_flush): false when not attached or the bound ran out
+	bool Flush();
 	void SetRulesJson(const string &json); // parses, then hot-reloads the policy (R3.1)
+	//! spec 002: rebuild the transport from the settings - `changed` names the setting whose new
+	//! value is `value` (a SET's callback runs before the value is stored) - and swap it into the
+	//! sink; an endpoint from neither a setting nor the environment means the stand-in
+	void Reconfigure(DatabaseInstance &db, const string &changed = string(), const Value &value = Value());
 	string StatusJson(DatabaseInstance &db);
 
 	shared_ptr<OtelSink> Sink();
 	shared_ptr<OtelPolicy> Policy();
+	//! the header names the transport carries (never a value), '' when there is no transport
+	vector<string> HeaderNames();
 
 private:
+	//! lock-free (Start calls it under the lock); `names` receives the transport's header names
+	shared_ptr<Exporter> BuildExporter(DatabaseInstance &db, const string &changed, const Value &value,
+	                                   vector<string> &names);
+	vector<string> header_names; // under `lock`
 	std::mutex lock;
 	shared_ptr<acl::AuditHooks> hooks; // held: the registry outlives our sink's removal
 	shared_ptr<OtelSink> sink;

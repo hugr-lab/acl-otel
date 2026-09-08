@@ -1,0 +1,93 @@
+# name: test/sql/acl_otel_otlp.test
+# description: spec 002 - the OTLP transport is built from the settings, a closed port ends in counted export errors with the SDK text as last_error, protocol and scope are validated, and an empty endpoint is the stand-in again
+# group: [sql]
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/acl_otel/acl_otel.duckdb_extension';
+
+query I
+SELECT acl_otel_status() LIKE '%"exporter":"none (acl_otel_endpoint is empty)"%';
+----
+true
+
+statement error
+SET GLOBAL acl_otel_protocol = 'carrier-pigeon';
+----
+<REGEX>:.*acl_otel_protocol accepts 'http/protobuf' or 'grpc', not 'carrier-pigeon'.*
+
+statement error
+SET acl_otel_endpoint = 'http://127.0.0.1:1';
+----
+<REGEX>:.*acl_otel_endpoint is global - use SET GLOBAL.*
+
+# a port nobody listens on: the transport is built (the status names it), the export fails and is
+# counted, never silent - the collector's absence is the operator's to see
+statement ok
+SET GLOBAL acl_otel_timeout = 1;
+
+statement ok
+SET GLOBAL acl_otel_endpoint = 'http://127.0.0.1:1';
+
+query II
+SELECT s LIKE '%"exporter":"otlp/http -> http://127.0.0.1:1/v1/logs"%', s LIKE '%"headers":[]%' FROM (SELECT acl_otel_status() AS s);
+----
+true	true
+
+# the protocol switch rebuilds the exporter on the endpoint as it stands
+statement ok
+SET GLOBAL acl_otel_protocol = 'grpc';
+
+query I
+SELECT acl_otel_status() LIKE '%"exporter":"otlp/grpc -> http://127.0.0.1:1"%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_endpoint = '127.0.0.1:1';
+
+query I
+SELECT acl_otel_status() LIKE '%"exporter":"otlp/grpc -> 127.0.0.1:1"%';
+----
+true
+
+# RESET is the environment's protocol again - none set here, so http
+statement ok
+RESET acl_otel_protocol;
+
+query I
+SELECT acl_otel_status() LIKE '%"exporter":"otlp/http -> %';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_protocol = 'http/protobuf';
+
+# a URL that names the logs path already is kept as written
+statement ok
+SET GLOBAL acl_otel_endpoint = 'http://127.0.0.1:1/v1/logs';
+
+query I
+SELECT acl_otel_status() LIKE '%"exporter":"otlp/http -> http://127.0.0.1:1/v1/logs"%';
+----
+true
+
+# back to nothing: the stand-in again, and the transport settings keep their values
+statement ok
+SET GLOBAL acl_otel_endpoint = '';
+
+query II
+SELECT acl_otel_status() LIKE '%"exporter":"none (acl_otel_endpoint is empty)"%', current_setting('acl_otel_timeout');
+----
+true	1
+
+# a credential written into the endpoint is never printed back (R9.2)
+statement ok
+SET GLOBAL acl_otel_endpoint = 'http://user:secret@127.0.0.1:1';
+
+query II
+SELECT s LIKE '%otlp/http -> http://***@127.0.0.1:1/v1/logs%', s LIKE '%secret%' FROM (SELECT acl_otel_status() AS s);
+----
+true	false
+
+statement ok
+SET GLOBAL acl_otel_endpoint = '';

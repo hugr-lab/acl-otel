@@ -1,5 +1,15 @@
 {
-    "dependencies": [],
+    "dependencies": [
+        {
+            "name": "opentelemetry-cpp",
+            "default-features": false,
+            "features": [
+                "otlp-http",
+                "otlp-grpc"
+            ],
+            "platform": "!wasm32"
+        }
+    ],
     "vcpkg-configuration": {
         "overlay-ports": [
             "./extension-ci-tools/vcpkg_ports"

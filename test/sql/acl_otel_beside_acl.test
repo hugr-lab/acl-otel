@@ -1,7 +1,5 @@
 # name: test/sql/acl_otel_beside_acl.test
-# description: spec 001 - loaded beside acl (ACL_EXT names the base's built extension): the base's
-#   events reach the sink, and the level policy decides a session's level when it opens - a role the
-#   rule names is recorded at `all` while the instance sits at `denied`, another role is not.
+# description: spec 001 - loaded beside acl (ACL_EXT names the base built extension): the base events reach the sink, and the level policy decides a session level when it opens
 # group: [sql]
 
 require-env ACL_EXT
@@ -62,5 +60,38 @@ true
 # ...and the sink saw them: the extension counts what the base handed it
 query I
 SELECT acl_otel_status() LIKE '%"received":0%';
+----
+false
+
+# spec 002: the transport's failure is visible - a port nobody listens on, the batch flushed, the
+# status counts the events that did not arrive and carries the SDK's reason (R6.2, R6.3)
+statement ok
+SET GLOBAL acl_otel_timeout = 1;
+
+statement ok
+SET GLOBAL acl_otel_endpoint = 'http://127.0.0.1:1';
+
+statement ok
+SELECT acl_session_open('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2lzc3Vlci50ZXN0L3MiLCJhdWQiOiJhcGk6Ly9hY2wtdGVzdCIsImV4cCI6NDEwMjQ0NDgwMCwic3ViIjoidWEiLCJyb2xlcyI6WyJhbmFseXN0Il0sInRpZCI6ImFjbWUifQ.pj_vV6OmT_k_3y1MWLBTC_SjngWPkzsFS5K0iULL6OM') AS h;
+
+statement ok
+SELECT acl_audit_flush();
+
+query I
+SELECT acl_otel_flush();
+----
+true
+
+query III
+SELECT s LIKE '%"export_errors":0%', s LIKE '%"last_error":null%', s LIKE '%127.0.0.1 port 1%' FROM (SELECT acl_otel_status() AS s);
+----
+false	false	true
+
+# the flush answers false once the sink is gone
+statement ok
+SELECT acl_otel_stop();
+
+query I
+SELECT acl_otel_flush();
 ----
 false

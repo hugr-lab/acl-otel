@@ -15,10 +15,31 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # level rules are parsed with duckdb's bundled yyjson
 include_directories(src/include duckdb-acl/src/include duckdb/third_party/yyjson/include)
 
-set(EXTENSION_SOURCES src/acl_otel_extension.cpp src/acl_otel_rules.cpp src/acl_otel_sink.cpp src/acl_otel_state.cpp)
+# the OpenTelemetry C++ SDK (spec 002): the OTLP log exporters over HTTP/protobuf and gRPC, from
+# vcpkg (opentelemetry-cpp[otlp-http,otlp-grpc] in vcpkg.json), linked statically into the loadable
+# as the base links Arrow
+find_package(opentelemetry-cpp CONFIG REQUIRED)
+set(ACL_OTEL_SDK_LIBS opentelemetry-cpp::otlp_http_log_record_exporter opentelemetry-cpp::otlp_grpc_log_record_exporter
+                      opentelemetry-cpp::logs opentelemetry-cpp::resources)
+
+set(EXTENSION_SOURCES src/acl_otel_extension.cpp src/acl_otel_rules.cpp src/acl_otel_sink.cpp src/acl_otel_state.cpp
+                      src/acl_otel_otlp.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
+
+target_link_libraries(${EXTENSION_NAME} ${ACL_OTEL_SDK_LIBS})
+target_link_libraries(${LOADABLE_EXTENSION_NAME} ${ACL_OTEL_SDK_LIBS})
+
+# The transport's test (spec 002) links the SDK, its protobuf classes (the fake receivers decode
+# what arrives) and gRPC, so it is a CMake target rather than a Makefile-compiled one; built on
+# demand by `make test-cpp`, never by a plain `make`
+find_package(gRPC CONFIG REQUIRED)
+add_executable(acl_otel_test_otlp EXCLUDE_FROM_ALL test/cpp/test_acl_otel_otlp.cpp src/acl_otel_otlp.cpp
+               src/acl_otel_sink.cpp src/acl_otel_state.cpp src/acl_otel_rules.cpp)
+target_include_directories(acl_otel_test_otlp PRIVATE test/cpp ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib)
+target_link_libraries(acl_otel_test_otlp duckdb ${ACL_OTEL_SDK_LIBS} opentelemetry-cpp::proto
+                      opentelemetry-cpp::proto_grpc gRPC::grpc++)
 
 install(
   TARGETS ${EXTENSION_NAME}

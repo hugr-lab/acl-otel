@@ -29,8 +29,10 @@ specs here.
 
   The base and this extension load on the same instance: **same duckdb pin, always**. A bump of
   the base's pin is a bump here in the same day.
-- **Dependencies**: none yet. Spec 002 brings `opentelemetry-cpp[otlp-grpc,otlp-http]` through
-  vcpkg (the merged-manifest flow duckdb-acl uses for Arrow/gRPC; no vendoring — §5 of the contract).
+- **Dependencies**: `opentelemetry-cpp[otlp-http,otlp-grpc]` (spec 002) through vcpkg — the
+  merged-manifest flow duckdb-acl uses for Arrow/gRPC, no vendoring (§5 of the contract).
+  `make vcpkg-setup` once, or `VCPKG_TOOLCHAIN_PATH` at the base's checkout (same ports, its binary
+  cache). The Makefile's guard names the goals that NEED the toolchain, never the exceptions.
 - **Platforms**: where the base ships (Linux, macOS, Windows); **no wasm** (an exporter is sockets).
 - **License**: BUSL 1.1 (the parameters in `LICENSE` are the licensor's to revise before release).
 
@@ -41,18 +43,22 @@ src/
   acl_otel_extension.cpp   # entry: settings (acl_otel_*, GLOBAL only), the operator's functions, Start at load
   acl_otel_rules.cpp       # the level rules (R3): JSON → rules, first-match LevelFor
   acl_otel_sink.cpp        # the sink (R1.5/R10.1): bounded queue, one worker, batches to an Exporter
-  acl_otel_state.cpp       # per-instance state in the object cache: attach/detach, status JSON
-  include/acl_otel.hpp     # the types above; acl_otel_extension.hpp the Extension class
+  acl_otel_state.cpp       # per-instance state in the object cache: attach/detach, Reconfigure, status JSON
+  acl_otel_otlp.cpp        # spec 002: event → LogRecord mapping, the SDK's HTTP/gRPC exporter, the quiet SDK log
+  include/acl_otel.hpp     # the types above; acl_otel_otlp.hpp the exporter; acl_otel_extension.hpp the Extension
 test/sql/                  # sqllogictests; LOAD by build path (DONT_LINK loadable, invisible to `require`)
-test/cpp/                  # standalone C++ tests (make test-cpp): the rules engine, the sink
+test/cpp/                  # C++ tests (make test-cpp): rules + sink Makefile-compiled; the OTLP one is the CMake
+                           #   target acl_otel_test_otlp (it links the SDK) with fake receivers in-process
+deploy/                    # reference Collector configuration (otlp → azuremonitor)
 specs/                     # one spec per feature (specs/README.md); design/ is local research (gitignored)
-scripts/ci/                # smoke_load (the artifact LOADS), assert_ran (a suite that skipped is red)
+scripts/ci/                # smoke_load (the artifact LOADS), assert_ran (a suite that skipped is red), prune_vcpkg_cache
 ```
 
 ## Commands
 
 ```sh
 git submodule update --init --recursive
+make vcpkg-setup                                # once (or VCPKG_TOOLCHAIN_PATH=…/duckdb-acl/vcpkg/scripts/buildsystems/vcpkg.cmake)
 GEN=ninja make                                  # release build of duckdb + the extension
 build/release/test/unittest 'test/sql/*'        # the whole suite (the beside-acl file needs ACL_EXT)
 ACL_EXT=../duckdb-acl/build/release/extension/acl/acl.duckdb_extension build/release/test/unittest test/sql/acl_otel_beside_acl.test
@@ -70,7 +76,15 @@ find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dr
 - **`OnEvent` is O(1), no I/O, no wait** (R10.1). The queue is bounded; a full queue drops and
   counts. `Flush()` is bounded too (the base calls it on its audit thread).
 - **Every drop is counted, never silent** (R6.2): `acl_otel_status()` shows queue / no-exporter /
-  export-error drops separately.
+  export-error drops separately. The SDK's HTTP log exporter answers success whatever its client
+  said (1.24): an error the SDK logged during the export IS the failure (`QuietLogHandler`,
+  spec 002) — never trust `kSuccess` alone.
+- **Never a secret in a setting** (R9.2): OTLP headers come from `OTEL_EXPORTER_OTLP_HEADERS`
+  only; the status prints header names, never values. The SDK never writes to stderr from here
+  (the handler swallows what it does not keep).
+- **The beside-acl test is the proof, and CI runs it**: two loadables on one instance, the base's
+  real artifact (downloaded from duckdb-acl's latest green `main` run). A change that passes only
+  the alone-suite is not done.
 - **Never the keys, the rows, the statement text, a claim value not allowlisted** (C5, R5.1): the
   event is safe by the base's construction; the exporter must keep it so.
 - **The extension never writes to the policy catalog and never calls a policy-changing `acl_*`
