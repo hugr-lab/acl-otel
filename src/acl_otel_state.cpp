@@ -92,8 +92,16 @@ bool OtelState::Start(DatabaseInstance &db) {
 	if (attached) {
 		return false;
 	}
-	// the registry: whoever comes first creates it, the base adopts it when it loads (C2)
-	hooks = db.GetObjectCache().GetOrCreate<acl::AuditHooks>(acl::AuditHooks::ObjectType());
+	// the registry: whoever comes first creates it, the base adopts it when it loads (C2) - unless
+	// it was stamped with another contract version (C2a: a base built from another acl_audit.hpp
+	// created it first): then nothing of ours goes on it, and the status says so
+	string why;
+	hooks = acl::AuditHooks::Reach(db.GetObjectCache(), why);
+	if (!hooks) {
+		attach_error = why;
+		return false;
+	}
+	attach_error.clear();
 	auto queue = SettingInt64(db, "acl_otel_queue_size", 10000);
 	auto batch = SettingInt64(db, "acl_otel_batch_size", 512);
 	auto flush = SettingInt64(db, "acl_otel_flush_interval", 5);
@@ -133,6 +141,11 @@ bool OtelState::Stop() {
 		ending->Stop();
 	}
 	return true;
+}
+
+string OtelState::AttachError() {
+	std::lock_guard<std::mutex> guard(lock);
+	return attach_error;
 }
 
 bool OtelState::Flush() {
@@ -225,6 +238,8 @@ string OtelState::StatusJson(DatabaseInstance &db) {
 		is_attached = attached;
 	}
 	string json = "{\"attached\":" + string(is_attached ? "true" : "false");
+	auto refused = AttachError();
+	json += ",\"attach_error\":" + (refused.empty() ? string("null") : JsonQuote(refused));
 	json += ",\"acl_loaded\":" +
 	        string(db.GetObjectCache().Get<acl::AuditHooks>(acl::AuditHooks::ObjectType()) ? "true" : "false");
 	json += ",\"endpoint\":" + JsonQuote(MaskUserinfo(SettingString(db, "acl_otel_endpoint", "")));

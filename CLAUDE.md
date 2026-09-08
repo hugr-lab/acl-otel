@@ -82,6 +82,10 @@ find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dr
 - **Never a secret in a setting** (R9.2): OTLP headers come from `OTEL_EXPORTER_OTLP_HEADERS`
   only; the status prints header names, never values. The SDK never writes to stderr from here
   (the handler swallows what it does not keep).
+- **The contract is stamped** (C2a): `AuditHooks::Reach` is the only way to the registry; a refusal
+  means do not attach (`attach_error` in the status, `acl_otel_start()` false). A bump of the base's
+  `CONTRACT_VERSION` is a submodule bump here the same day. `test_acl_otel_contract` (needs
+  `ACL_EXT`) is the two-loadable round trip the base cannot stage itself.
 - **The beside-acl test is the proof, and CI runs it**: two loadables on one instance, the base's
   real artifact (downloaded from duckdb-acl's latest green `main` run). A change that passes only
   the alone-suite is not done.

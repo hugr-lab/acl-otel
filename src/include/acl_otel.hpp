@@ -157,9 +157,13 @@ public:
 	//! reached from a setting's callback, a function or Load - one per DatabaseInstance
 	static shared_ptr<OtelState> Of(DatabaseInstance &db);
 
+	//! attach to the instance's registry - false when already attached, or when the registry there
+	//! is stamped with another contract version (AuditHooks::Reach): then nothing of ours is
+	//! registered and AttachError() says why (C2a of the contract)
 	bool Start(DatabaseInstance &db);
 	bool Stop();
 	bool Attached();
+	string AttachError();
 	//! drain the queue now (acl_otel_flush): false when not attached or the bound ran out
 	bool Flush();
 	void SetRulesJson(const string &json); // parses, then hot-reloads the policy (R3.1)
@@ -179,6 +183,7 @@ private:
 	shared_ptr<Exporter> BuildExporter(DatabaseInstance &db, const string &changed, const Value &value,
 	                                   vector<string> &names);
 	vector<string> header_names; // under `lock`
+	string attach_error;         // under `lock`: why the last Start refused to attach, '' when it did
 	std::mutex lock;
 	shared_ptr<acl::AuditHooks> hooks; // held: the registry outlives our sink's removal
 	shared_ptr<OtelSink> sink;
