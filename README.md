@@ -57,6 +57,23 @@ SELECT acl_otel_status();
 SELECT acl_otel_flush();      -- export what is queued now and wait for it
 ```
 
+### The surface
+
+Everything is `acl_otel_`-named, which is what keeps it the operator's: the base's function gate
+denies every `acl_`-prefixed function to a principal, and every setting here refuses any scope but
+`GLOBAL`.
+
+| function | what it does |
+| --- | --- |
+| `acl_otel_status()` | one JSON document: attached, the transports, the queue, every counter, the metrics object, health, where the rules came from |
+| `acl_otel_healthy()` | the readiness probe's boolean - see `acl_otel_strict` |
+| `acl_otel_start()` / `acl_otel_stop()` | attach to the base's registry, or detach and flush; idempotent, and the only way out (duckdb never unloads an extension) |
+| `acl_otel_flush()` | export the queued events now and wait for them, bounded |
+| `acl_otel_metrics_flush()` | export one metrics tick now |
+| `acl_otel_rules_refresh()` | read the central rules table now; answers how many rules are in force |
+| `acl_otel_create_rules_table()` | create that table, once, by hand, where `acl_otel_rules_table` points |
+| `acl_otel_version()` | the build |
+
 ### Settings (all `GLOBAL`, all `acl_otel_*`)
 
 | Setting | Default | What |
