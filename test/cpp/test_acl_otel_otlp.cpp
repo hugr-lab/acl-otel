@@ -321,6 +321,31 @@ int main() {
 		      "grpc: a port nobody listens on fails with a reason (" + error + ")");
 	}
 	{
+		// a wide statement: the list attributes stay documents a backend accepts whole (8 KB), whole
+		// elements only, and what did not fit is counted in the last element
+		acl::AuditEvent wide = Base(9, "statement", true);
+		wide.statement = "select";
+		for (int i = 0; i < 500; i++) {
+			wide.objects.push_back(
+			    acl::AuditObject {"catalog.schema.a_table_with_a_long_name_" + std::to_string(i), "select"});
+			wide.principal.roles.push_back("a_role_with_a_fairly_long_name_" + std::to_string(i));
+		}
+		auto objects = acl_otel::ObjectsJson(wide);
+		auto roles = acl_otel::RolesJson(wide);
+		Check(objects.size() <= 8192 && roles.size() <= 8192, "both lists stay within the 8 KB a backend keeps");
+		Check(objects.find("{\"truncated\":") != std::string::npos && objects.back() == ']' &&
+		          roles.find("{\"truncated\":") != std::string::npos,
+		      "...and each says how many did not fit");
+		Check(objects.find("_39\",") != std::string::npos &&
+		          objects.find("a_table_with_a_long_name_499") == std::string::npos,
+		      "whole elements only: an early one is there, the last is not");
+		acl::AuditEvent narrow = Base(10, "statement", true);
+		narrow.objects.push_back(acl::AuditObject {"c.orders", "select"});
+		Check(acl_otel::ObjectsJson(narrow) == "[{\"name\":\"c.orders\",\"capability\":\"select\"}]" &&
+		          acl_otel::RolesJson(narrow) == "[]",
+		      "a list that fits is unchanged, and an empty one is []");
+	}
+	{
 		bool refused = false;
 		try {
 			acl_otel::OtlpExporter exporter(Config("http://127.0.0.1:1", "carrier-pigeon"));

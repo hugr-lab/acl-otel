@@ -275,21 +275,46 @@ string BodyOf(const acl::AuditEvent &event) {
 	return body;
 }
 
-string RolesJson(const acl::AuditEvent &event) {
-	string json = "[";
-	for (idx_t i = 0; i < event.principal.roles.size(); i++) {
-		json += (i ? "," : "") + JsonQuote(event.principal.roles[i]);
+//! A list attribute stays a document a backend will accept whole: a statement over a wide join can
+//! touch hundreds of objects, and Application Insights truncates a customDimension at 8 KB - a
+//! silently cut JSON array is worse than an honestly short one. Whole elements only, and the count
+//! that did not fit is the last element, so a reader sees that it is looking at a part.
+constexpr idx_t LIST_ATTRIBUTE_LIMIT = 8192;
+
+string CloseList(string &json, idx_t skipped) {
+	if (skipped > 0) {
+		json += string(json.size() > 1 ? "," : "") + "{\"truncated\":" + std::to_string(skipped) + "}";
 	}
 	return json + "]";
 }
 
+string RolesJson(const acl::AuditEvent &event) {
+	string json = "[";
+	idx_t skipped = 0;
+	for (idx_t i = 0; i < event.principal.roles.size(); i++) {
+		auto item = JsonQuote(event.principal.roles[i]);
+		if (json.size() + item.size() + 32 > LIST_ATTRIBUTE_LIMIT) {
+			skipped = event.principal.roles.size() - i;
+			break;
+		}
+		json += (json.size() > 1 ? "," : "") + item;
+	}
+	return CloseList(json, skipped);
+}
+
 string ObjectsJson(const acl::AuditEvent &event) {
 	string json = "[";
+	idx_t skipped = 0;
 	for (idx_t i = 0; i < event.objects.size(); i++) {
-		json += string(i ? "," : "") + "{\"name\":" + JsonQuote(event.objects[i].name) +
-		        ",\"capability\":" + JsonQuote(event.objects[i].capability) + "}";
+		auto item = "{\"name\":" + JsonQuote(event.objects[i].name) +
+		            ",\"capability\":" + JsonQuote(event.objects[i].capability) + "}";
+		if (json.size() + item.size() + 32 > LIST_ATTRIBUTE_LIMIT) {
+			skipped = event.objects.size() - i;
+			break;
+		}
+		json += string(json.size() > 1 ? "," : "") + item;
 	}
-	return json + "]";
+	return CloseList(json, skipped);
 }
 
 void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &event) {
