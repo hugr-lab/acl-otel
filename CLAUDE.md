@@ -95,7 +95,11 @@ find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dr
   real artifact (downloaded from duckdb-acl's latest green `main` run). A change that passes only
   the alone-suite is not done.
 - **Never the keys, the rows, the statement text, a claim value not allowlisted** (C5, R5.1): the
-  event is safe by the base's construction; the exporter must keep it so.
+  event is safe by the base's construction; the exporter must keep it so. Two settings are the only
+  doors a claim value leaves by - `acl_otel_claim_attributes` (logs) and `acl_otel_claim_dimension`
+  (metrics) - and both are the operator's.
+- **Sampling never touches a refusal** (R6.1), and never the counters: it runs in `OnEvent` AFTER
+  the metrics accumulators have seen the event, so a rate stays exact while the records thin.
 - **The extension never writes to the policy catalog and never calls a policy-changing `acl_*`
   function** (R9.3).
 - Process: a spec per feature (`specs/NNN-slug/spec.md` from `specs/TEMPLATE.md`), tests with it,

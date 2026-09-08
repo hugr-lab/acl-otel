@@ -80,12 +80,13 @@ enum class TransportSetting : uint8_t {
 	INSECURE,
 	CERTIFICATE,
 	RESOURCE_ATTRIBUTES,
-	SERVICE_NAME
+	SERVICE_NAME,
+	CLAIM_ATTRIBUTES
 };
-const char *const TRANSPORT_SETTING_NAMES[] = {"acl_otel_endpoint",    "acl_otel_protocol",
-                                               "acl_otel_timeout",     "acl_otel_insecure",
-                                               "acl_otel_certificate", "acl_otel_resource_attributes",
-                                               "acl_otel_service_name"};
+const char *const TRANSPORT_SETTING_NAMES[] = {"acl_otel_endpoint",     "acl_otel_protocol",
+                                               "acl_otel_timeout",      "acl_otel_insecure",
+                                               "acl_otel_certificate",  "acl_otel_resource_attributes",
+                                               "acl_otel_service_name", "acl_otel_claim_attributes"};
 
 template <TransportSetting SETTING>
 void TransportSet(ClientContext &context, SetScope scope, Value &parameter) {
@@ -94,6 +95,9 @@ void TransportSet(ClientContext &context, SetScope scope, Value &parameter) {
 	if (SETTING == TransportSetting::PROTOCOL && !acl_otel::OtlpConfig::ValidProtocol(parameter.ToString())) {
 		throw InvalidInputException("acl_otel_protocol accepts 'http/protobuf' or 'grpc', not '%s'",
 		                            parameter.ToString());
+	}
+	if (SETTING == TransportSetting::CLAIM_ATTRIBUTES) {
+		acl_otel::ParseClaimAttributes(parameter.IsNull() ? string() : parameter.ToString()); // refused here
 	}
 	OtelState::Of(*context.db)->Reconfigure(*context.db, setting, parameter);
 }
@@ -145,6 +149,25 @@ void LoadInternal(ExtensionLoader &loader) {
 	                          "the system's",
 	                          LogicalType::VARCHAR, Value(""), TransportSet<TransportSetting::CERTIFICATE>,
 	                          SetScope::GLOBAL);
+	// spec 005 (R5.1): the only way a claim value reaches a log record. Parsed at the SET so more
+	// than sixteen names is refused there, and read by the mapping on every export.
+	config.AddExtensionOption("acl_otel_claim_attributes",
+	                          "acl_otel: the claim names whose values may be exported, comma separated, as "
+	                          "acl.claim.<name>; '' exports none (R5.1)",
+	                          LogicalType::VARCHAR, Value(""), TransportSet<TransportSetting::CLAIM_ATTRIBUTES>,
+	                          SetScope::GLOBAL);
+	// spec 005 (R6.1): the volume an operator can afford. A refusal is never sampled.
+	config.AddExtensionOption(
+	    "acl_otel_sample_allowed",
+	    "acl_otel: the ratio of ALLOWED statements exported - '1' keeps everything, '0.1' a tenth, or "
+	    "a JSON object per role like {\"analyst\": 0.05, \"*\": 0.5}; refusals, sessions, doors, policy "
+	    "and keys events are never sampled (R6.1)",
+	    LogicalType::VARCHAR, Value("1"),
+	    [](ClientContext &context, SetScope scope, Value &parameter) {
+		    RequireGlobal("acl_otel_sample_allowed", scope);
+		    OtelState::Of(*context.db)->SetSampling(parameter.IsNull() ? string("1") : parameter.ToString());
+	    },
+	    SetScope::GLOBAL);
 	config.AddExtensionOption("acl_otel_resource_attributes",
 	                          "acl_otel: extra resource attributes on every export, k=v,k=v", LogicalType::VARCHAR,
 	                          Value(""), TransportSet<TransportSetting::RESOURCE_ATTRIBUTES>, SetScope::GLOBAL);

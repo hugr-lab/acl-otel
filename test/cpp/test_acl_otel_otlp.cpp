@@ -168,7 +168,9 @@ vector<acl::AuditEvent> SampleBatch() {
 	allowed.principal.subject = "u7";
 	allowed.principal.issuer = "https://idp.corp/x";
 	allowed.principal.roles = {"analyst", "viewer"};
-	allowed.principal.claims["tenant"] = "acme"; // never exported (spec 005 is the only way)
+	allowed.principal.claims["tenant"] = "acme";           // exported only when named (spec 005)
+	allowed.principal.claims["secret"] = "not for export"; // never named, never exported
+	allowed.principal.claims["long"] = string(400, 'x');   // named below, and truncated
 	allowed.objects.push_back(acl::AuditObject {"c.orders", "select"});
 	allowed.objects.push_back(acl::AuditObject {"c.items", "select"});
 	allowed.correlation_id = "corr-1";
@@ -222,7 +224,7 @@ void CheckMapping(Capture &capture, const std::string &transport) {
 	          allowed.attributes.count("acl.duration_us") == 0,
 	      transport + ": what the event does not carry is absent, not empty");
 	Check(allowed.attributes.count("acl.claim.tenant") == 0 && allowed.attributes.count("tenant") == 0,
-	      transport + ": a claim value is never exported here (C5)");
+	      transport + ": a claim value is not exported when no setting names it (C5, spec 005)");
 	Check(allowed.trace_id_hex == "0af7651916cd43dd8448eb211c80319c" && allowed.span_id_hex == "b7ad6b7169203331",
 	      transport + ": the traceparent sets trace and span id (R1.2)");
 	Check(allowed.time_unix_nano == 1757000000000001000ULL, transport + ": the timestamp is the event's ts_us");
@@ -344,6 +346,30 @@ int main() {
 		Check(acl_otel::ObjectsJson(narrow) == "[{\"name\":\"c.orders\",\"capability\":\"select\"}]" &&
 		          acl_otel::RolesJson(narrow) == "[]",
 		      "a list that fits is unchanged, and an empty one is []");
+	}
+	{
+		// spec 005 (R5.1): the claims an operator named, and only those
+		HttpReceiver receiver;
+		auto config = Config("http://127.0.0.1:" + std::to_string(receiver.port), "http/protobuf");
+		config.claim_attributes = acl_otel::ParseClaimAttributes("tenant, long");
+		acl_otel::OtlpExporter exporter(config);
+		string error;
+		Check(exporter.Export(SampleBatch(), error), "claims: the batch is exported (" + error + ")");
+		auto allowed = receiver.capture.At(0);
+		Check(allowed.attributes["acl.claim.tenant"] == "acme", "the claim on the list is an acl.claim.<name>");
+		Check(allowed.attributes.count("acl.claim.secret") == 0 && allowed.attributes.count("secret") == 0,
+		      "...and one the list does not name is nowhere on the record");
+		auto truncated = allowed.attributes["acl.claim.long"];
+		Check(truncated.size() == 256 && truncated.rfind("...") == 253,
+		      "a claim longer than 256 bytes is cut with an ellipsis (" + std::to_string(truncated.size()) + ")");
+		Check(acl_otel::ParseClaimAttributes("a,b, c ,").size() == 3, "the list is comma separated and trimmed");
+		bool too_many = false;
+		try {
+			acl_otel::ParseClaimAttributes("a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q");
+		} catch (std::exception &) {
+			too_many = true;
+		}
+		Check(too_many, "more than sixteen names is refused");
 	}
 	{
 		bool refused = false;

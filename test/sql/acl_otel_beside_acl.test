@@ -91,6 +91,46 @@ FROM (SELECT acl_otel_status() AS s);
 ----
 false	false	true
 
+# spec 005: sampling thins what the sink stores and never what the node counts. An allowed
+# statement needs something to read, so the analyst gets a table first.
+statement ok
+ATTACH ':memory:' AS phys;
+
+statement ok
+CREATE TABLE phys.main.orders(id INTEGER, tenant VARCHAR);
+
+statement ok
+ACL ADMIN CREATE VIRTUAL TABLE c.orders AS phys.main.orders;
+
+statement ok
+SET GLOBAL acl_audit_level = 'all';
+
+statement ok
+SET GLOBAL acl_otel_sample_allowed = '0';
+
+statement ok
+ACL ROLE 'analyst' SELECT count(*) FROM orders;
+
+statement ok
+ACL ROLE 'analyst' SELECT count(*) FROM orders;
+
+statement ok
+SELECT acl_audit_flush();
+
+query I
+SELECT acl_otel_status() LIKE '%"sampled":0%';
+----
+false
+
+# the base counted every one of them whatever we sampled away
+query I
+SELECT value > 0 FROM acl_metrics() WHERE name = 'acl.decisions' LIMIT 1;
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_sample_allowed = '1';
+
 # the flush answers false once the sink is gone
 statement ok
 SELECT acl_otel_stop();

@@ -1,0 +1,66 @@
+# name: test/sql/acl_otel_sampling.test
+# description: spec 005 - the claim allowlist and the sampling ratio are GLOBAL and judged at the SET, and the status says how many allowed statements were sampled away
+# group: [sql]
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/extension/acl_otel/acl_otel.duckdb_extension';
+
+# both settings are the operator's
+statement error
+SET acl_otel_claim_attributes = 'tenant';
+----
+<REGEX>:.*acl_otel_claim_attributes is global - use SET GLOBAL.*
+
+statement error
+SET acl_otel_sample_allowed = '0.5';
+----
+<REGEX>:.*acl_otel_sample_allowed is global - use SET GLOBAL.*
+
+# the claim list is bounded where it is written (R5.1)
+statement error
+SET GLOBAL acl_otel_claim_attributes = 'a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q';
+----
+<REGEX>:.*more than 16 claims.*
+
+statement ok
+SET GLOBAL acl_otel_claim_attributes = 'tenant, region';
+
+# the ratio is judged at the SET, in both of its shapes
+statement error
+SET GLOBAL acl_otel_sample_allowed = 'often';
+----
+<REGEX>:.*neither a ratio nor a JSON object.*
+
+statement error
+SET GLOBAL acl_otel_sample_allowed = '1.5';
+----
+<REGEX>:.*between 0 and 1.*
+
+statement error
+SET GLOBAL acl_otel_sample_allowed = '{"analyst": 2}';
+----
+<REGEX>:.*not between 0 and 1.*
+
+statement ok
+SET GLOBAL acl_otel_sample_allowed = '{"analyst": 0.05, "*": 0.5}';
+
+statement ok
+SET GLOBAL acl_otel_sample_allowed = '0.25';
+
+# nothing has been sampled yet: the status counts it beside the drops, because it is a policy and
+# not a failure
+query I
+SELECT acl_otel_status() LIKE '%"sampled":0%';
+----
+true
+
+# a value that is not a ratio at all still leaves the setting as it was
+statement error
+SET GLOBAL acl_otel_sample_allowed = '[]';
+----
+<REGEX>:.*expected a ratio or a JSON object.*
+
+query I
+SELECT current_setting('acl_otel_sample_allowed');
+----
+0.25

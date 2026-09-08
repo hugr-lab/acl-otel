@@ -34,6 +34,9 @@ struct OtlpConfig {
 	string service_name = "duckdb-acl";
 	string instance_id;         // the node id
 	string resource_attributes; // k=v,k=v
+	//! spec 005 (R5.1): the claim names whose values may be exported, as `acl.claim.<name>`. Empty
+	//! - the default - exports none: a claim value leaves the node only when an operator names it.
+	vector<string> claim_attributes;
 	string duckdb_version;
 	string acl_otel_version;
 	//! from the settings (through the instance) and the base's acl_node_id when acl is loaded
@@ -57,6 +60,11 @@ opentelemetry::sdk::resource::Resource ResourceOf(const OtlpConfig &config);
 //! endpoint is the operator's choice against R9.2, and the status still never prints it
 string MaskUserinfo(const string &url);
 
+//! spec 005: `acl_otel_claim_attributes` - at most 16 names, refused at the SET beyond that
+vector<string> ParseClaimAttributes(const string &names);
+//! a claim value as a record may carry it: at most 256 bytes, with an ellipsis when it was longer
+string ClaimValue(const string &value);
+
 //! The W3C traceparent, parsed: `00-<32 hex>-<16 hex>-<2 hex>`; false on anything else
 bool ParseTraceparent(const string &traceparent, uint8_t trace_id[16], uint8_t span_id[8], uint8_t &flags);
 
@@ -78,8 +86,11 @@ public:
 	string Describe() const override;
 	//! the header NAMES the transport carries (R9.2: never a value)
 	vector<string> HeaderNames() const;
-	//! fill one SDK record from one event - the mapping of R1.1-R1.2, shared with the tests
-	static void Fill(opentelemetry::sdk::logs::Recordable &record, const acl::AuditEvent &event);
+	//! fill one SDK record from one event - the mapping of R1.1-R1.2, shared with the tests.
+	//! `claims` names the claims whose values may be exported (spec 005, R5.1); every other claim
+	//! the event carries in memory is dropped here.
+	static void Fill(opentelemetry::sdk::logs::Recordable &record, const acl::AuditEvent &event,
+	                 const vector<string> &claims);
 
 private:
 	OtlpConfig config;

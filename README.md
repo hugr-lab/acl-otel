@@ -28,8 +28,14 @@ in the base; what is built so far is in [`specs/`](specs/README.md).
   events (rewrite duration, session duration, ingest rows) with bounds an operator may replace, and
   the high-cardinality series (by role, object, subject, one claim) that exist only when named -
   each capped, with everything past the cap folded into `other` and counted.
-- Not yet: per-connection logging (004), enrichment and sampling (005), the self-metrics and
-  `strict` mode (006), rules kept in the policy catalog (007).
+- **Spec 005 (enrichment and sampling)**: a claim value reaches a record only when the operator
+  names its claim (`acl_otel_claim_attributes`, as `acl.claim.<name>`, bounded at sixteen names and
+  256 bytes each), and `allowed` statements may be thinned by ratio - overall or per role - while
+  refusals, sessions, doors, policy and keys events never are. Sampling is deterministic in the
+  event's sequence number, so two nodes with the same setting keep the same statements, and the
+  counters and histograms still see everything.
+- Not yet: per-connection logging (004), the self-metrics and `strict` mode (006), rules kept in
+  the policy catalog (007).
 
 ```sql
 LOAD acl;
@@ -57,6 +63,8 @@ SELECT acl_otel_flush();      -- export what is queued now and wait for it
 | `acl_otel_histogram_buckets` / `_histogram_sums` | `''` / `true` | the bounds per histogram as JSON, and the `_sum` / `_count` pair beside each |
 | `acl_otel_series` / `_claim_dimension` | `''` / `''` | the opt-in series (`by_role,by_object,by_subject,by_claim`) and the one claim `by_claim` counts by |
 | `acl_otel_max_series` / `_series_allowlist` | `1000` / `''` | distinct label values before the `other` fold, and the values kept exact regardless |
+| `acl_otel_claim_attributes` | `''` | the claims whose values may be exported, as `acl.claim.<name>`; at most 16 |
+| `acl_otel_sample_allowed` | `1` | the ratio of ALLOWED statements exported, or a JSON object per role; a refusal is never sampled |
 
 A setting at its default means the standard environment decides, so a container configured the
 OpenTelemetry way needs no SET; a setting that is set wins over its variable.
