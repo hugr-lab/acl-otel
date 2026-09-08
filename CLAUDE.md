@@ -86,6 +86,11 @@ find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dr
   means do not attach (`attach_error` in the status, `acl_otel_start()` false). A bump of the base's
   `CONTRACT_VERSION` is a submodule bump here the same day. `test_acl_otel_contract` (needs
   `ACL_EXT`) is the two-loadable round trip the base cannot stage itself.
+- **A red beside-acl step usually means the BASE moved.** CI fetches duckdb-acl's latest green
+  `main` artifact, which may be ahead of the `duckdb-acl/` submodule pinned here: when the base
+  bumps `CONTRACT_VERSION`, our extension refuses to attach to its registry and the step goes red
+  until this repo bumps the submodule. That is the early warning working, not a flake - and the
+  order to merge in is base first, then here, the same day.
 - **The beside-acl test is the proof, and CI runs it**: two loadables on one instance, the base's
   real artifact (downloaded from duckdb-acl's latest green `main` run). A change that passes only
   the alone-suite is not done.
