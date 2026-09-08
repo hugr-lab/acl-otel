@@ -37,4 +37,9 @@ jobs:
       extension_name: acl_otel
       duckdb_version: v2.0-cyanoptera
       ci_tools_version: main
-      format_checks: 'format;tidy'
+      # `format` only. The upstream Tidy Check configures the build WITHOUT provisioning vcpkg, and
+      # this extension cannot configure at all without the OpenTelemetry SDK - its CMakeLists says
+      # `find_package(opentelemetry-cpp CONFIG REQUIRED)`, and the toolchain file the Makefile points
+      # at is not there in that job. So it fails for a reason that is never our code. clang-tidy runs
+      # in ci.yml instead, on the Linux job, where vcpkg and a compile database exist (`make tidy`).
+      format_checks: 'format'
