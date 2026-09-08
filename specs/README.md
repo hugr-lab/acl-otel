@@ -41,3 +41,4 @@ specs are the shareable distillation of that work.
 | [003](003-otlp-metrics/spec.md) | OTLP metrics - the base's counters and gauges, our histograms, the opt-in series bounded | implemented |
 | [005](005-enrichment-sampling/spec.md) | enrichment and sampling - the one claim an operator asked for, and the volume they can afford | implemented |
 | [006](006-self-metrics-health/spec.md) | the extension's own numbers, and a gauge an orchestrator can act on | implemented |
+| [007](007-central-rules/spec.md) | the level rules a fleet writes once, in a table every node reads | implemented |

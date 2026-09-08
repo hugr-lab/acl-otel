@@ -39,6 +39,10 @@ struct LevelRule {
 //! `acl_otel_level_rules`: a JSON array of objects, each with any of role / subject / issuer / door
 //! and a level. Throws InvalidInputException naming what is wrong; "" or "[]" is no rules.
 vector<LevelRule> ParseLevelRules(const string &json);
+//! spec 007: one row of the central table as a rule. NULL, '' and '*' all mean "any"; an unknown
+//! level throws, naming the row.
+LevelRule RuleFromRow(const string &role, const string &subject, const string &issuer, const string &door,
+                      const string &level, int64_t seq);
 bool RuleMatches(const LevelRule &rule, const acl::Principal &principal, const string &door);
 
 class OtelMetrics;     // spec 003, acl_otel_metrics.hpp
@@ -232,6 +236,16 @@ public:
 	//! the extension's own numbers, as metric points for the scrape (R7.2)
 	vector<MetricPoint> SelfMetrics(DatabaseInstance &db);
 	void SetRulesJson(const string &json); // parses, then hot-reloads the policy (R3.1)
+	//! spec 007: read the central table now; returns how many rules are in force, or throws with
+	//! what went wrong. Leaves the rules as they were when the read fails.
+	idx_t RefreshRules(DatabaseInstance &db);
+	//! read once and start the reader, when a table is named at all
+	void StartRules(DatabaseInstance &db);
+	//! start/stop the reader's own thread; the table setting decides whether it runs at all
+	void StartRulesReader(DatabaseInstance &db);
+	void StopRulesReader();
+	//! `setting`, `table` or `none` - which of the two sources is in force
+	string RulesSource(DatabaseInstance &db);
 	//! spec 005: the sampler from `acl_otel_sample_allowed`, parsed (and refused) at the SET
 	void SetSampling(const string &document);
 	//! spec 002: rebuild the transport from the settings - `changed` names the setting whose new
@@ -261,7 +275,15 @@ private:
 	vector<string> header_names;    // under `lock`
 	string sampling_document = "1"; // under `lock`, spec 005: kept for a restart
 	Health health;                  // under `lock`, spec 006
-	string attach_error;            // under `lock`: why the last Start refused to attach, '' when it did
+	// spec 007: the reader of the central table, and what it last saw
+	std::thread rules_worker;
+	std::condition_variable rules_wake;
+	bool rules_stopping = false;
+	int64_t rules_read_us = 0; // under `lock`
+	string rules_error;        // under `lock`, '' when the last read worked
+	idx_t rules_in_force = 0;  // under `lock`
+	void ReadRules(DatabaseInstance &db);
+	string attach_error; // under `lock`: why the last Start refused to attach, '' when it did
 	std::mutex lock;
 	shared_ptr<acl::AuditHooks> hooks; // held: the registry outlives our sink's removal
 	shared_ptr<OtelSink> sink;

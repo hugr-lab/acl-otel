@@ -1,0 +1,135 @@
+# name: test/sql/acl_otel_central_rules.test
+# description: spec 007 - the level rules a fleet writes once: the table is created by hand, read on demand, the JSON setting wins while it is set, and a bad row leaves the rules in force
+# group: [sql]
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/extension/acl_otel/acl_otel.duckdb_extension';
+
+# every setting is the operator's
+statement error
+SET acl_otel_rules_table = 'store.acl_otel.level_rules';
+----
+<REGEX>:.*acl_otel_rules_table is global - use SET GLOBAL.*
+
+statement error
+SET acl_otel_rules_interval = 5;
+----
+<REGEX>:.*acl_otel_rules_interval is global - use SET GLOBAL.*
+
+# with no table named there is no reader at all, and the status says where the rules come from
+query II
+SELECT s LIKE '%"rules_source":"none"%', s LIKE '%"rules_error":null%' FROM (SELECT acl_otel_status() AS s);
+----
+true	true
+
+# the table is created by hand, in a database the operator names
+statement error
+SELECT acl_otel_create_rules_table();
+----
+<REGEX>:.*set acl_otel_rules_table first.*
+
+statement ok
+ATTACH ':memory:' AS store;
+
+statement ok
+SET GLOBAL acl_otel_rules_table = 'store.acl_otel.level_rules';
+
+statement ok
+SELECT acl_otel_create_rules_table();
+
+# ... and creating it twice is not an error
+statement ok
+SELECT acl_otel_create_rules_table();
+
+query I
+SELECT count(*) FROM store.acl_otel.level_rules;
+----
+0
+
+# an empty table is a fleet saying "the instance level governs", not an error
+query I
+SELECT acl_otel_rules_refresh();
+----
+0
+
+statement ok
+INSERT INTO store.acl_otel.level_rules VALUES (1, 'analyst', NULL, NULL, 'flight', 'all'), (2, '*', NULL, NULL, NULL, 'denied');
+
+query I
+SELECT acl_otel_rules_refresh();
+----
+2
+
+query III
+SELECT s LIKE '%"rules":2%', s LIKE '%"rules_source":"table"%', s LIKE '%"rules_error":null%'
+FROM (SELECT acl_otel_status() AS s);
+----
+true	true	true
+
+# the JSON setting wins while it is set (§5): the table is still read, and not applied
+statement ok
+SET GLOBAL acl_otel_level_rules = '[{"role": "auditor", "level": "all"}]';
+
+query II
+SELECT acl_otel_rules_refresh(), acl_otel_status() LIKE '%"rules_source":"setting"%';
+----
+2	true
+
+query I
+SELECT acl_otel_status() LIKE '%"rules":1%';
+----
+true
+
+# cleared, the table takes over again
+statement ok
+SET GLOBAL acl_otel_level_rules = '';
+
+query II
+SELECT acl_otel_rules_refresh(), acl_otel_status() LIKE '%"rules":2%';
+----
+2	true
+
+# a row with an unknown level leaves the rules in force and says so
+statement ok
+INSERT INTO store.acl_otel.level_rules VALUES (3, 'nobody', NULL, NULL, NULL, 'loud');
+
+statement error
+SELECT acl_otel_rules_refresh();
+----
+<REGEX>:.*needs a level of off, denied, decisions or all.*
+
+query II
+SELECT s LIKE '%"rules":2%', s LIKE '%"rules_error":null%' FROM (SELECT acl_otel_status() AS s);
+----
+true	false
+
+statement ok
+DELETE FROM store.acl_otel.level_rules WHERE seq = 3;
+
+query I
+SELECT acl_otel_rules_refresh();
+----
+2
+
+# a table that is not there is an error an operator can read, and not a crash
+statement ok
+SET GLOBAL acl_otel_rules_table = 'store.acl_otel.nothing_here';
+
+statement error
+SELECT acl_otel_rules_refresh();
+----
+<REGEX>:.*the rules table could not be read.*
+
+query I
+SELECT acl_otel_status() LIKE '%"rules_error":null%';
+----
+false
+
+# ... and the rules it read before are still the rules
+query I
+SELECT acl_otel_status() LIKE '%"rules":2%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_rules_table = '';

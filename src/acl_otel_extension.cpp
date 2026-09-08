@@ -66,6 +66,41 @@ void AclOtelMetricsFlushFunc(DataChunk &args, ExpressionState &state, Vector &re
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->FlushMetrics()), count_t(args.size()));
 }
 
+//! spec 007: create our own schema and table in the database the operator named. The one statement
+//! this extension ever writes with, and only when a person runs it.
+void AclOtelCreateRulesTableFunc(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &db = InstanceOf(state);
+	auto table = acl_otel::SettingString(db, "acl_otel_rules_table", "");
+	StringUtil::Trim(table);
+	if (table.empty()) {
+		throw InvalidInputException("acl_otel_create_rules_table: set acl_otel_rules_table first - the fully "
+		                            "qualified name of the table to create, e.g. 'store.acl_otel.level_rules'");
+	}
+	auto parts = StringUtil::Split(table, '.');
+	if (parts.size() != 3) {
+		throw InvalidInputException("acl_otel_create_rules_table: acl_otel_rules_table must name a database, a "
+		                            "schema and a table, e.g. 'store.acl_otel.level_rules', not '%s'",
+		                            table);
+	}
+	Connection con(db);
+	auto schema = con.Query("CREATE SCHEMA IF NOT EXISTS " + parts[0] + "." + parts[1]);
+	if (schema->HasError()) {
+		throw InvalidInputException("acl_otel_create_rules_table: %s", schema->GetError());
+	}
+	auto created = con.Query("CREATE TABLE IF NOT EXISTS " + table +
+	                         "(seq BIGINT, role VARCHAR, subject VARCHAR, issuer VARCHAR, door VARCHAR, "
+	                         "level VARCHAR)");
+	if (created->HasError()) {
+		throw InvalidInputException("acl_otel_create_rules_table: %s", created->GetError());
+	}
+	result.Reference(Value::BOOLEAN(true), count_t(args.size()));
+}
+
+void AclOtelRulesRefreshFunc(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &db = InstanceOf(state);
+	result.Reference(Value::BIGINT(NumericCast<int64_t>(OtelState::Of(db)->RefreshRules(db))), count_t(args.size()));
+}
+
 void AclOtelHealthyFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &db = InstanceOf(state);
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->Healthy(db)), count_t(args.size()));
@@ -210,6 +245,28 @@ void LoadInternal(ExtensionLoader &loader) {
 	                          LogicalType::VARCHAR, Value("duckdb-acl"), TransportSet<TransportSetting::SERVICE_NAME>,
 	                          SetScope::GLOBAL);
 
+	// spec 007 (§5): the rules a fleet writes once. Naming the table is what turns the reader on;
+	// nothing here creates it - acl_otel_create_rules_table() does, when a person runs it.
+	config.AddExtensionOption(
+	    "acl_otel_rules_table",
+	    "acl_otel: the fully qualified table the level rules are read from, e.g. "
+	    "'store.acl_otel.level_rules'; '' = no reader at all. acl_otel_level_rules wins while it is set",
+	    LogicalType::VARCHAR, Value(""),
+	    [](ClientContext &context, SetScope scope, Value &) {
+		    RequireGlobal("acl_otel_rules_table", scope);
+		    // the reader starts (or stops) on the next start; a SET alone does not open a connection
+		    OtelState::Of(*context.db)->StopRulesReader();
+	    },
+	    SetScope::GLOBAL);
+	config.AddExtensionOption(
+	    "acl_otel_rules_interval", "acl_otel: seconds between reads of the rules table (spec 007)", LogicalType::BIGINT,
+	    Value::BIGINT(30),
+	    [](ClientContext &, SetScope scope, Value &) { RequireGlobal("acl_otel_rules_interval", scope); },
+	    SetScope::GLOBAL);
+	config.AddExtensionOption(
+	    "acl_otel_max_rules", "acl_otel: the most rules a read of the table will take", LogicalType::BIGINT,
+	    Value::BIGINT(1000),
+	    [](ClientContext &, SetScope scope, Value &) { RequireGlobal("acl_otel_max_rules", scope); }, SetScope::GLOBAL);
 	// spec 006 (R7.3): strict does not refuse a statement - the base emits after the decision, and
 	// nothing can be refused afterwards. It makes `acl_otel.healthy` drop to 0 while events are
 	// being lost, which is the signal a deployment drains a node on.
@@ -296,9 +353,15 @@ void LoadInternal(ExtensionLoader &loader) {
 	register_scalar("acl_otel_metrics_flush", LogicalType::BOOLEAN, AclOtelMetricsFlushFunc);
 	// spec 006: what a readiness probe reads, without parsing the status
 	register_scalar("acl_otel_healthy", LogicalType::BOOLEAN, AclOtelHealthyFunc);
+	// spec 007: the central rules - read now, or create the table an operator will write them into
+	register_scalar("acl_otel_rules_refresh", LogicalType::BIGINT, AclOtelRulesRefreshFunc);
+	register_scalar("acl_otel_create_rules_table", LogicalType::BOOLEAN, AclOtelCreateRulesTableFunc);
 
 	// R8.1: attached at load, before or after acl - the registry is shared through the cache
 	OtelState::Of(db)->Start(db);
+	// spec 007: and the central rules, if a table was named before this load (a config file, a
+	// second instance in the same process); naming it later starts the reader at the next start
+	OtelState::Of(db)->StartRules(db);
 }
 
 } // namespace
