@@ -46,6 +46,8 @@ $(TEST_CPP_DIR)/test_acl_otel_rules: TEST_CPP_EXTRA := src/acl_otel_rules.cpp
 $(TEST_CPP_DIR)/test_acl_otel_rules: src/acl_otel_rules.cpp src/include/acl_otel.hpp
 $(TEST_CPP_DIR)/test_acl_otel_sink: TEST_CPP_EXTRA := src/acl_otel_sink.cpp
 $(TEST_CPP_DIR)/test_acl_otel_sink: src/acl_otel_sink.cpp src/include/acl_otel.hpp
+$(TEST_CPP_DIR)/test_acl_otel_metrics: TEST_CPP_EXTRA := src/acl_otel_metrics.cpp duckdb/third_party/yyjson/yyjson.cpp
+$(TEST_CPP_DIR)/test_acl_otel_metrics: src/acl_otel_metrics.cpp src/include/acl_otel_metrics.hpp
 
 $(TEST_CPP_DIR)/%: test/cpp/%.cpp $(TEST_CPP_DUCKDB_LIB)
 	@mkdir -p $(TEST_CPP_DIR)
