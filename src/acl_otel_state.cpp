@@ -126,6 +126,9 @@ bool OtelState::Start(DatabaseInstance &db) {
 		metrics = make_shared_ptr<OtelMetrics>(SettingInt64(db, "acl_otel_metrics_interval", 15), std::move(histograms),
 		                                       BuildMetricsExporter(db, string(), Value()));
 		ApplySeriesSettings(db, *metrics);
+		Value sums;
+		metrics->SetHistogramSums(!db.TryGetCurrentSetting("acl_otel_histogram_sums", sums) || sums.IsNull() ||
+		                          sums.GetValue<bool>());
 		sink->SetMetrics(metrics);
 		metrics->Start(hooks);
 	}

@@ -117,6 +117,36 @@ FROM (SELECT acl_otel_status() AS s);
 ----
 false	true
 
+# a setting made while the scrape is off is still honoured when it starts: the pair stays off
+statement ok
+SET GLOBAL acl_otel_metrics = false;
+
+statement ok
+SELECT acl_otel_stop();
+
+statement ok
+SET GLOBAL acl_otel_histogram_sums = false;
+
+statement ok
+SET GLOBAL acl_otel_metrics = true;
+
+statement ok
+SELECT acl_otel_start();
+
+query I
+SELECT acl_otel_status() LIKE '%"metrics":{%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_histogram_sums = true;
+
+statement ok
+SELECT acl_otel_stop();
+
+statement ok
+SELECT acl_otel_start();
+
 # metrics off: no scrape at all, and the status says so
 statement ok
 SET GLOBAL acl_otel_metrics = false;
