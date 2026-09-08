@@ -82,6 +82,15 @@ find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dr
 - **Never a secret in a setting** (R9.2): OTLP headers come from `OTEL_EXPORTER_OTLP_HEADERS`
   only; the status prints header names, never values. The SDK never writes to stderr from here
   (the handler swallows what it does not keep).
+- **The contract is stamped** (C2a): `AuditHooks::Reach` is the only way to the registry; a refusal
+  means do not attach (`attach_error` in the status, `acl_otel_start()` false). A bump of the base's
+  `CONTRACT_VERSION` is a submodule bump here the same day. `test_acl_otel_contract` (needs
+  `ACL_EXT`) is the two-loadable round trip the base cannot stage itself.
+- **A red beside-acl step usually means the BASE moved.** CI fetches duckdb-acl's latest green
+  `main` artifact, which may be ahead of the `duckdb-acl/` submodule pinned here: when the base
+  bumps `CONTRACT_VERSION`, our extension refuses to attach to its registry and the step goes red
+  until this repo bumps the submodule. That is the early warning working, not a flake - and the
+  order to merge in is base first, then here, the same day.
 - **The beside-acl test is the proof, and CI runs it**: two loadables on one instance, the base's
   real artifact (downloaded from duckdb-acl's latest green `main` run). A change that passes only
   the alone-suite is not done.
@@ -91,6 +100,14 @@ find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dr
   function** (R9.3).
 - Process: a spec per feature (`specs/NNN-slug/spec.md` from `specs/TEMPLATE.md`), tests with it,
   a self-review before "done" (adversarial passes over the diff), CI green before merge.
+
+## What the owner still has to switch on
+
+The distribution matrix builds the OpenTelemetry SDK (grpc, protobuf, abseil, curl) for nine
+triplets — hours from cold. `distribution.yml` already passes a vcpkg binary cache through; it only
+needs the credentials: copy the repository variable `VCPKG_BINARY_SOURCES` and the four
+`VCPKG_CACHING_AWS_*` secrets from `duckdb-acl` (its `docs/vcpkg-cache-r2.md` explains the bucket).
+Until then the runs fall back to duckdb's public read-only cache and are merely slow.
 
 ## Reference repos (local)
 

@@ -137,6 +137,8 @@ jobs:
           scripts/ci/smoke_load.sh
           build/release/test/unittest test/sql/acl_otel_beside_acl.test 2>&1 | tee beside.log
           scripts/ci/assert_ran.sh beside.log 1 1
+          build/test/test_acl_otel_contract 2>&1 | tee contract.log
+          scripts/ci/assert_ran.sh contract.log 0 0
 
       - name: Upload extension artifact
         if: github.event_name != 'pull_request'
@@ -216,6 +218,8 @@ jobs:
           scripts/ci/smoke_load.sh
           build/release/test/unittest test/sql/acl_otel_beside_acl.test 2>&1 | tee beside.log
           scripts/ci/assert_ran.sh beside.log 1 1
+          build/test/test_acl_otel_contract 2>&1 | tee contract.log
+          scripts/ci/assert_ran.sh contract.log 0 0
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7

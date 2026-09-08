@@ -20,7 +20,11 @@ int64_t NowMicros() {
 } // namespace
 
 OtelSink::OtelSink(idx_t queue_size_p, idx_t batch_size_p, int64_t flush_interval_ms_p, shared_ptr<Exporter> exporter_p)
-    : queue_size(queue_size_p == 0 ? 1 : queue_size_p), batch_size(batch_size_p == 0 ? 1 : batch_size_p),
+    // a batch larger than the queue would never be reached, and OnEvent would stop waking the worker
+    // at all: the queue would fill, drop, and drain only on the flush timer. So a batch is at most a
+    // queue.
+    : queue_size(queue_size_p == 0 ? 1 : queue_size_p),
+      batch_size(MinValue<idx_t>(batch_size_p == 0 ? 1 : batch_size_p, queue_size_p == 0 ? 1 : queue_size_p)),
       flush_interval_ms(flush_interval_ms_p <= 0 ? 1 : flush_interval_ms_p), exporter(std::move(exporter_p)) {
 	if (!exporter) {
 		exporter = make_shared_ptr<NoneExporter>();

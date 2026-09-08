@@ -142,6 +142,19 @@ int main() {
 		Check(sink.stats.received == 11 && sink.stats.dropped_queue + sink.stats.exported == 11,
 		      "after Stop every event is accounted for (exported or dropped)");
 	}
+	{
+		// a batch configured larger than the queue: the queue would fill at 8 and never reach 512, so
+		// OnEvent would stop waking the worker and everything would wait on the flush timer (a minute
+		// here). The batch is clamped to the queue instead, so the events go out at once.
+		auto recording = make_shared_ptr<Recording>();
+		acl_otel::OtelSink sink(8, 512, 60000, recording);
+		for (int64_t i = 1; i <= 8; i++) {
+			sink.OnEvent(MakeEvent(i));
+		}
+		Check(Within(2000, [&] { return recording->Count() == 8; }),
+		      "a batch bigger than the queue still leaves without waiting for the flush timer");
+		Check(sink.stats.dropped_queue == 0, "...and nothing was dropped on the way");
+	}
 	std::printf("PASS\n");
 	return 0;
 }

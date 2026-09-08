@@ -65,9 +65,10 @@ the backend can index (flat attributes, bounded names), the transport one every 
 | --- | --- |
 | timestamp | `ts_us` |
 | observed timestamp | export time |
-| severity | `allowed` → INFO; `!allowed` → WARN; `reason_code = source_error`, or `kind ∈ {policy, keys}` with `!allowed` → ERROR |
+| severity | `allowed` → INFO; `!allowed` → WARN; `reason_code ∈ {source_error, policy_error}`, or `kind ∈ {policy, keys}` with `!allowed` → ERROR (the source of the decision failed, not the principal) |
 | body | `<kind> <allowed|denied>` + `: <reason>` when there is one |
 | trace id / span id | `traceparent` (`00-<32 hex>-<16 hex>-<2 hex>`, W3C); a malformed value sets neither and is not exported as an attribute |
+| list attributes | `acl.roles` and `acl.objects` are JSON documents capped at 8 KB - whole elements only, with `{"truncated": N}` as the last element when a wide statement does not fit (Application Insights cuts a dimension at 8 KB, and a silently cut array is worse than an honestly short one) |
 | attributes | `acl.kind`, `acl.statement`, `acl.verdict`, `acl.reason_code`, `acl.reason`, `acl.door`, `acl.session`, `acl.subject`, `acl.issuer`, `acl.roles` (a JSON array string), `acl.objects` (a JSON array of `{name, capability}`, as a string), `acl.correlation_id`, `acl.rewrite_us`, `acl.rows`, `acl.duration_us`, `acl.detail`, `acl.level`, `acl.seq`, `acl.node` - each only when the event carries it (an empty string or a `-1` is absent, not exported) |
 | resource | `service.name` (`acl_otel_service_name`, default `duckdb-acl`), `service.instance.id` (the base's `acl_node_id` when acl is loaded, else `<hostname>:<pid>`), `duckdb.version`, `acl_otel.version`, plus `acl_otel_resource_attributes` (`k=v,k=v`) |
 | instrumentation scope | `acl_otel`, its version |
@@ -133,10 +134,11 @@ extension-ci-tools.
   not values.
 - A failed export is counted and dropped - the node never blocks on the backend, and never buffers
   across a restart (§6).
-- The SDK's log is process-wide: an error another exporter logs during an export - the old
-  transport shutting down at a reconfigure - is attributed to the batch in flight, which is then
-  counted as failed although it arrived. A mis-count of one batch at a SET, never a lost event;
-  the counter is the operator's signal, not an accounting.
+- The SDK's log is process-wide: an error another exporter in this process logs during an export -
+  the old transport shutting down at a reconfigure, a second `DatabaseInstance`'s exporter - is
+  attributed to the batch in flight, which is then counted as failed although it arrived. A
+  mis-count of one batch, never a lost event; the counter is the operator's signal, not an
+  accounting.
 
 ## Testing
 

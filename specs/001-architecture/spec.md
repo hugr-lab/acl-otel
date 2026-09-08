@@ -129,3 +129,15 @@ safety envelope (R10, C3, C6) and must be right before anything is exported.
 
 - The vcpkg flow (merged manifests, the fail-fast guard, `make vcpkg-setup`) arrives with 002.
 - `make tidy` as in the base, once the tree has enough code to lint beyond format.
+
+
+## Addendum 2026-09-08 - the contract stamp (C2a)
+
+Header-only cuts both ways: two copies of the contract's types built from different revisions of
+`acl_audit.hpp` would read one registry through two layouts. The base now stamps the registry
+(`AuditHooks::CONTRACT_MAGIC` + `CONTRACT_VERSION`, its first members) and `AuditHooks::Reach` is
+how both sides get it. Here: `OtelState::Start` refuses to attach when `Reach` refuses - nothing of
+ours on that registry, `acl_otel_status()` says `attached: false` with `attach_error`,
+`acl_otel_start()` answers false. `test_acl_otel_contract` (with `ACL_EXT`) stages the round trip
+with two real loadables: a stale registry first, acl auditing privately and naming the stamp it
+found, acl_otel refusing; then a fresh instance sharing one.

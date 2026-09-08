@@ -14,7 +14,8 @@ in the base; what is built so far is in [`specs/`](specs/README.md).
 ## Status
 
 - **Spec 001 (the wiring)**: the sink and the level policy attach to the base's registry in either
-  load order, `acl_otel_level_rules` decides a session's level (first match: role / subject /
+  load order (a registry stamped by another revision of the contract header is refused, and the
+  status says so - `attach_error`), `acl_otel_level_rules` decides a session's level (first match: role / subject /
   issuer / door), `acl_otel_status()` reports the extension's own numbers, `acl_otel_stop()` /
   `acl_otel_start()` detach and re-attach.
 - **Spec 002 (OTLP logs)**: every audit event is one OpenTelemetry log record - severity from the
