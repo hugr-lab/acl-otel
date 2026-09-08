@@ -96,6 +96,14 @@ find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dr
 - Process: a spec per feature (`specs/NNN-slug/spec.md` from `specs/TEMPLATE.md`), tests with it,
   a self-review before "done" (adversarial passes over the diff), CI green before merge.
 
+## What the owner still has to switch on
+
+The distribution matrix builds the OpenTelemetry SDK (grpc, protobuf, abseil, curl) for nine
+triplets — hours from cold. `distribution.yml` already passes a vcpkg binary cache through; it only
+needs the credentials: copy the repository variable `VCPKG_BINARY_SOURCES` and the four
+`VCPKG_CACHING_AWS_*` secrets from `duckdb-acl` (its `docs/vcpkg-cache-r2.md` explains the bucket).
+Until then the runs fall back to duckdb's public read-only cache and are merely slow.
+
 ## Reference repos (local)
 
 `~/projects/hugr-lab/duckdb-acl` (the base: the contract, the CI recipe, `make tidy`),

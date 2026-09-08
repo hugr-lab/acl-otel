@@ -29,6 +29,19 @@ jobs:
       ci_tools_version: main
       # wasm is out: the extension ships where the base does, and an exporter is sockets
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads'
+      # The OpenTelemetry SDK pulls grpc, protobuf, abseil and curl, built for every triplet in the
+      # matrix - hours from cold. duckdb-acl keeps a vcpkg binary cache on Cloudflare R2 for exactly
+      # this (its docs/vcpkg-cache-r2.md), and the same bucket serves us: vcpkg keys packages by ABI
+      # hash, so two extensions share it without colliding. Copy the variable VCPKG_BINARY_SOURCES
+      # and the four VCPKG_CACHING_AWS_* secrets from duckdb-acl into this repository to switch it
+      # on; with none of them set, `vars.VCPKG_BINARY_SOURCES` is empty and the reusable workflow
+      # falls back to duckdb's public read-only cache - correct, merely slow.
+      vcpkg_binary_sources: ${{ vars.VCPKG_BINARY_SOURCES }}
+    secrets:
+      VCPKG_CACHING_AWS_ACCESS_KEY_ID: ${{ secrets.VCPKG_CACHING_AWS_ACCESS_KEY_ID }}
+      VCPKG_CACHING_AWS_SECRET_ACCESS_KEY: ${{ secrets.VCPKG_CACHING_AWS_SECRET_ACCESS_KEY }}
+      VCPKG_CACHING_AWS_ENDPOINT_URL: ${{ secrets.VCPKG_CACHING_AWS_ENDPOINT_URL }}
+      VCPKG_CACHING_AWS_DEFAULT_REGION: ${{ secrets.VCPKG_CACHING_AWS_DEFAULT_REGION }}
 
   code-quality-check:
     name: Code Quality Check
