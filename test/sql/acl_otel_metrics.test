@@ -1,0 +1,168 @@
+# name: test/sql/acl_otel_metrics.test
+# description: spec 003 - the metrics settings are GLOBAL and validated at the SET, the status carries the scrape's own numbers, the opt-in series take effect at once, and a tick with no endpoint is counted as a drop
+# group: [sql]
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/extension/acl_otel/acl_otel.duckdb_extension';
+
+# the scrape is on by default, with its own object in the status
+query II
+SELECT s LIKE '%"metrics":{%', s LIKE '%"interval":15%' FROM (SELECT acl_otel_status() AS s);
+----
+true	true
+
+# every setting is the operator's: a session scope is refused
+statement error
+SET acl_otel_metrics_interval = 5;
+----
+<REGEX>:.*acl_otel_metrics_interval is global - use SET GLOBAL.*
+
+statement error
+SET acl_otel_series = 'by_role';
+----
+<REGEX>:.*acl_otel_series is global - use SET GLOBAL.*
+
+# the bucket document is judged at the SET, and a bad one changes nothing
+statement error
+SET GLOBAL acl_otel_histogram_buckets = '{"acl.nothing": [1, 2]}';
+----
+<REGEX>:.*names an instrument that does not exist.*
+
+statement error
+SET GLOBAL acl_otel_histogram_buckets = '{"acl.ingest.rows": [10, 5]}';
+----
+<REGEX>:.*must ascend.*
+
+statement ok
+SET GLOBAL acl_otel_histogram_buckets = '{"acl.ingest.rows": [10, 100, 1000]}';
+
+# the allowlist likewise
+statement error
+SET GLOBAL acl_otel_series_allowlist = 'not json';
+----
+<REGEX>:.*not a JSON document.*
+
+statement error
+SET GLOBAL acl_otel_series_allowlist = '{"acl.decisions.by_role": "analyst"}';
+----
+<REGEX>:.*needs an array of values.*
+
+statement ok
+SET GLOBAL acl_otel_series_allowlist = '{"acl.decisions.by_role": ["analyst"]}';
+
+# the opt-in series are off until they are named, and take effect at once (R2.3)
+query I
+SELECT acl_otel_status() LIKE '%"series":[]%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_series = 'by_role, by_subject';
+
+query II
+SELECT s LIKE '%"name":"acl.decisions.by_role"%', s LIKE '%"name":"acl.decisions.by_subject"%'
+FROM (SELECT acl_otel_status() AS s);
+----
+true	true
+
+# by_claim without a claim to count by is not a series
+statement ok
+SET GLOBAL acl_otel_series = 'by_claim';
+
+query I
+SELECT acl_otel_status() LIKE '%"series":[]%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_claim_dimension = 'tenant';
+
+query I
+SELECT acl_otel_status() LIKE '%"name":"acl.decisions.by_claim"%';
+----
+true
+
+# a tick with no endpoint exports nothing and counts the drop, never silently (R6.2)
+query I
+SELECT acl_otel_metrics_flush();
+----
+false
+
+query I
+SELECT acl_otel_status() LIKE '%"dropped_no_exporter":0%';
+----
+false
+
+# with an endpoint, the metrics transport is the logs' - one configuration, two signals
+statement ok
+SET GLOBAL acl_otel_timeout = 1;
+
+statement ok
+SET GLOBAL acl_otel_endpoint = 'http://127.0.0.1:1';
+
+query I
+SELECT acl_otel_status() LIKE '%"metrics":{"interval":15,"exporter":"otlp/http -> http://127.0.0.1:1/v1/metrics"%';
+----
+true
+
+# ... and a refused export is an error with the reason, not a silent nothing
+query I
+SELECT acl_otel_metrics_flush();
+----
+false
+
+query II
+SELECT s LIKE '%"export_errors":0,"last_error":null,"series"%', s LIKE '%127.0.0.1 port 1%'
+FROM (SELECT acl_otel_status() AS s);
+----
+false	true
+
+# a setting made while the scrape is off is still honoured when it starts: the pair stays off
+statement ok
+SET GLOBAL acl_otel_metrics = false;
+
+statement ok
+SELECT acl_otel_stop();
+
+statement ok
+SET GLOBAL acl_otel_histogram_sums = false;
+
+statement ok
+SET GLOBAL acl_otel_metrics = true;
+
+statement ok
+SELECT acl_otel_start();
+
+query I
+SELECT acl_otel_status() LIKE '%"metrics":{%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_histogram_sums = true;
+
+statement ok
+SELECT acl_otel_stop();
+
+statement ok
+SELECT acl_otel_start();
+
+# metrics off: no scrape at all, and the status says so
+statement ok
+SET GLOBAL acl_otel_metrics = false;
+
+statement ok
+SELECT acl_otel_stop();
+
+statement ok
+SELECT acl_otel_start();
+
+query II
+SELECT s LIKE '%"metrics":null%', s LIKE '%"attached":true%' FROM (SELECT acl_otel_status() AS s);
+----
+true	true
+
+query I
+SELECT acl_otel_metrics_flush();
+----
+false

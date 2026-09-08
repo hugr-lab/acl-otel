@@ -5,6 +5,8 @@
 
 #include "acl_otel.hpp"
 
+#include "acl_otel_metrics.hpp"
+
 #include <chrono>
 
 namespace duckdb {
@@ -36,8 +38,25 @@ OtelSink::~OtelSink() {
 	Stop();
 }
 
+void OtelSink::SetMetrics(shared_ptr<OtelMetrics> metrics_p) {
+	std::lock_guard<std::mutex> guard(lock);
+	metrics = std::move(metrics_p);
+}
+
 void OtelSink::OnEvent(const acl::AuditEvent &event) {
 	stats.received++;
+	{
+		// spec 003 first: an event that the queue then drops still shaped a histogram, and the base's
+		// own counters counted it too - the two agree
+		shared_ptr<OtelMetrics> observers;
+		{
+			std::lock_guard<std::mutex> guard(lock);
+			observers = metrics;
+		}
+		if (observers) {
+			observers->Observe(event);
+		}
+	}
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		if (stopping || queue.size() >= queue_size) {
@@ -69,8 +88,14 @@ bool OtelSink::FlushNow() {
 }
 
 void OtelSink::SetExporter(shared_ptr<Exporter> exporter_p) {
-	std::lock_guard<std::mutex> guard(lock);
-	exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoneExporter>();
+	shared_ptr<Exporter> previous;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		previous = std::move(exporter);
+		exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoneExporter>();
+	}
+	// `previous` dies HERE, outside the lock: an SDK exporter's destructor shuts its client down
+	// (bounded, but up to two seconds), and OnEvent must not wait behind that on the audit thread
 }
 
 string OtelSink::ExporterName() {

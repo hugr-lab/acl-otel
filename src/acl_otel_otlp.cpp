@@ -184,6 +184,37 @@ vector<std::pair<string, string>> ParsePairs(const string &text) {
 
 } // namespace
 
+string TakeSdkError() {
+	return SdkLog().Take();
+}
+
+//! the OTLP convention: a base URL gets the signal's path, a URL that already names it is kept
+string SignalUrl(const string &endpoint, const string &path) {
+	auto url = endpoint;
+	if (url.find(path) != string::npos) {
+		return url;
+	}
+	if (!url.empty() && url.back() == '/') {
+		url.pop_back();
+	}
+	return url + path;
+}
+
+//! the resource both signals carry (R1.3): the node, the versions, and what the operator adds
+opentelemetry::sdk::resource::Resource ResourceOf(const OtlpConfig &config) {
+	opentelemetry::sdk::resource::ResourceAttributes attributes;
+	attributes.SetAttribute("service.name", config.service_name);
+	attributes.SetAttribute("service.instance.id", config.instance_id);
+	attributes.SetAttribute("duckdb.version", config.duckdb_version);
+	if (!config.acl_otel_version.empty()) {
+		attributes.SetAttribute("acl_otel.version", config.acl_otel_version);
+	}
+	for (auto &pair : ParsePairs(config.resource_attributes)) {
+		attributes.SetAttribute(pair.first, pair.second);
+	}
+	return opentelemetry::sdk::resource::Resource::Create(attributes);
+}
+
 bool OtlpConfig::ValidProtocol(const string &protocol) {
 	return protocol.empty() || protocol == "http/protobuf" || protocol == "grpc";
 }
@@ -384,19 +415,7 @@ OtlpExporter::OtlpExporter(const OtlpConfig &config_p) : config(config_p) {
 		throw InvalidInputException("acl_otel_protocol accepts 'http/protobuf' or 'grpc', not '%s'", config.protocol);
 	}
 	auto protocol = config.ResolvedProtocol();
-	// the resource (R1.3): the node, the versions, and what the operator adds
-	opentelemetry::sdk::resource::ResourceAttributes attributes;
-	attributes.SetAttribute("service.name", config.service_name);
-	attributes.SetAttribute("service.instance.id", config.instance_id);
-	attributes.SetAttribute("duckdb.version", config.duckdb_version);
-	if (!config.acl_otel_version.empty()) {
-		attributes.SetAttribute("acl_otel.version", config.acl_otel_version);
-	}
-	for (auto &pair : ParsePairs(config.resource_attributes)) {
-		attributes.SetAttribute(pair.first, pair.second);
-	}
-	resource =
-	    make_uniq<opentelemetry::sdk::resource::Resource>(opentelemetry::sdk::resource::Resource::Create(attributes));
+	resource = make_uniq<opentelemetry::sdk::resource::Resource>(ResourceOf(config));
 	auto created = opentelemetry::sdk::instrumentationscope::InstrumentationScope::Create(
 	    "acl_otel", config.acl_otel_version.empty() ? "dev" : config.acl_otel_version);
 	scope = unique_ptr<opentelemetry::sdk::instrumentationscope::InstrumentationScope>(created.release());
@@ -426,15 +445,7 @@ OtlpExporter::OtlpExporter(const OtlpConfig &config_p) : config(config_p) {
 	} else {
 		otlp::OtlpHttpLogRecordExporterOptions options;
 		if (!config.endpoint.empty()) {
-			auto url = config.endpoint;
-			// the OTLP convention: a base URL gets the logs path, a URL that already names it is kept
-			if (url.find("/v1/logs") == string::npos) {
-				if (!url.empty() && url.back() == '/') {
-					url.pop_back();
-				}
-				url += "/v1/logs";
-			}
-			options.url = url;
+			options.url = SignalUrl(config.endpoint, "/v1/logs");
 		}
 		if (config.timeout_s > 0) {
 			options.timeout = timeout;

@@ -44,6 +44,15 @@ struct OtlpConfig {
 	string ResolvedProtocol() const;
 };
 
+//! What the SDK logged as an error since the last call, and clears it: the HTTP exporters answer
+//! success whatever their client said, so this is the failure signal both transports read.
+string TakeSdkError();
+//! the OTLP convention: a base URL gets the signal's path (`/v1/logs`, `/v1/metrics`), a URL that
+//! already names it is kept as written
+string SignalUrl(const string &endpoint, const string &path);
+//! the resource every signal of this node carries (R1.3)
+opentelemetry::sdk::resource::Resource ResourceOf(const OtlpConfig &config);
+
 //! `scheme://user:secret@host/...` -> `scheme://***@host/...`: a credential written into the
 //! endpoint is the operator's choice against R9.2, and the status still never prints it
 string MaskUserinfo(const string &url);

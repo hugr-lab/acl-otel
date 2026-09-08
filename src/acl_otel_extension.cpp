@@ -11,6 +11,7 @@
 #include "acl_otel_extension.hpp"
 
 #include "acl_otel.hpp"
+#include "acl_otel_metrics.hpp"
 #include "acl_otel_otlp.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -60,6 +61,11 @@ void AclOtelFlushFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->Flush()), count_t(args.size()));
 }
 
+void AclOtelMetricsFlushFunc(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &db = InstanceOf(state);
+	result.Reference(Value::BOOLEAN(OtelState::Of(db)->FlushMetrics()), count_t(args.size()));
+}
+
 void AclOtelStopFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &db = InstanceOf(state);
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->Stop()), count_t(args.size()));
@@ -90,6 +96,22 @@ void TransportSet(ClientContext &context, SetScope scope, Value &parameter) {
 		                            parameter.ToString());
 	}
 	OtelState::Of(*context.db)->Reconfigure(*context.db, setting, parameter);
+}
+
+//! the opt-in series' settings (R2.3): like the transport's, one template instance per setting,
+//! because a SET's callback is a plain function pointer
+enum class SeriesSetting : uint8_t { SERIES, CLAIM, MAX, ALLOWLIST };
+const char *const SERIES_SETTING_NAMES[] = {"acl_otel_series", "acl_otel_claim_dimension", "acl_otel_max_series",
+                                            "acl_otel_series_allowlist"};
+
+template <SeriesSetting SETTING>
+void SeriesSet(ClientContext &context, SetScope scope, Value &parameter) {
+	const char *setting = SERIES_SETTING_NAMES[static_cast<uint8_t>(SETTING)];
+	RequireGlobal(setting, scope);
+	if (SETTING == SeriesSetting::ALLOWLIST) {
+		acl_otel::ParseSeriesAllowlist(parameter.IsNull() ? string() : parameter.ToString()); // refused at the SET
+	}
+	OtelState::Of(*context.db)->ReconfigureSeries(*context.db, setting, parameter);
 }
 
 void LoadInternal(ExtensionLoader &loader) {
@@ -160,6 +182,60 @@ void LoadInternal(ExtensionLoader &loader) {
 	                          LogicalType::VARCHAR, Value("duckdb-acl"), TransportSet<TransportSetting::SERVICE_NAME>,
 	                          SetScope::GLOBAL);
 
+	// spec 003: the metrics side. The endpoint, protocol, TLS and headers are the logs' (spec 002);
+	// what is here is the scrape's own shape - what it exports, how often, and how bounded.
+	config.AddExtensionOption(
+	    "acl_otel_metrics", "acl_otel: export metrics at all (at the next acl_otel_start)", LogicalType::BOOLEAN,
+	    Value::BOOLEAN(true),
+	    [](ClientContext &, SetScope scope, Value &) { RequireGlobal("acl_otel_metrics", scope); }, SetScope::GLOBAL);
+	config.AddExtensionOption(
+	    "acl_otel_metrics_interval", "acl_otel: seconds between metric scrapes (at the next acl_otel_start)",
+	    LogicalType::BIGINT, Value::BIGINT(15),
+	    [](ClientContext &, SetScope scope, Value &) { RequireGlobal("acl_otel_metrics_interval", scope); },
+	    SetScope::GLOBAL);
+	config.AddExtensionOption(
+	    "acl_otel_histogram_buckets",
+	    "acl_otel: the bucket bounds per histogram, a JSON object of instrument -> ascending bounds; "
+	    "an instrument it does not name keeps its defaults (at the next acl_otel_start)",
+	    LogicalType::VARCHAR, Value(""),
+	    [](ClientContext &, SetScope scope, Value &parameter) {
+		    RequireGlobal("acl_otel_histogram_buckets", scope);
+		    // refused here, at the SET: a bad bound never reaches a running scrape
+		    auto histograms = acl_otel::DefaultHistograms();
+		    acl_otel::ApplyBucketDocument(histograms, parameter.IsNull() ? string() : parameter.ToString());
+	    },
+	    SetScope::GLOBAL);
+	config.AddExtensionOption(
+	    "acl_otel_histogram_sums",
+	    "acl_otel: emit the _sum / _count pair beside every histogram, for a backend that cannot "
+	    "ingest an OTLP histogram (R2.5)",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(true),
+	    [](ClientContext &context, SetScope scope, Value &parameter) {
+		    RequireGlobal("acl_otel_histogram_sums", scope);
+		    OtelState::Of(*context.db)->SetHistogramSums(parameter.IsNull() || parameter.GetValue<bool>());
+	    },
+	    SetScope::GLOBAL);
+	// the opt-in series (R2.3): each takes effect at once, on the running scrape
+	auto series_setting = [&](const char *name, const char *description, const LogicalType &type, const Value &fallback,
+	                          set_option_callback_t callback) {
+		config.AddExtensionOption(name, description, type, fallback, callback, SetScope::GLOBAL);
+	};
+	series_setting("acl_otel_series",
+	               "acl_otel: the high-cardinality series to export, by name and comma separated - "
+	               "by_role, by_object, by_subject, by_claim; '' = none (R2.3)",
+	               LogicalType::VARCHAR, Value(""), SeriesSet<SeriesSetting::SERIES>);
+	series_setting("acl_otel_claim_dimension",
+	               "acl_otel: the one claim acl.decisions.by_claim counts by (e.g. 'tenant'); a claim "
+	               "value leaves the node only here and only when this names it",
+	               LogicalType::VARCHAR, Value(""), SeriesSet<SeriesSetting::CLAIM>);
+	series_setting("acl_otel_max_series",
+	               "acl_otel: distinct label values per series before the rest fold into 'other' (R2.3)",
+	               LogicalType::BIGINT, Value::BIGINT(1000), SeriesSet<SeriesSetting::MAX>);
+	series_setting("acl_otel_series_allowlist",
+	               "acl_otel: the values kept exact whatever the order of arrival, a JSON object of "
+	               "instrument -> values",
+	               LogicalType::VARCHAR, Value(""), SeriesSet<SeriesSetting::ALLOWLIST>);
+
 	auto register_scalar = [&](const char *name, const LogicalType &returns, scalar_function_t fn) {
 		ScalarFunction function(Identifier(name), {}, returns, std::move(fn));
 		// volatile: each call reads the state as it is now; a folded call would answer the plan's moment
@@ -174,6 +250,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	// spec 002: export what is queued now and wait for it (bounded) - before a shutdown, or to see
 	// in the status what the collector answered
 	register_scalar("acl_otel_flush", LogicalType::BOOLEAN, AclOtelFlushFunc);
+	// spec 003: export one metrics tick now, without waiting for the timer
+	register_scalar("acl_otel_metrics_flush", LogicalType::BOOLEAN, AclOtelMetricsFlushFunc);
 
 	// R8.1: attached at load, before or after acl - the registry is shared through the cache
 	OtelState::Of(db)->Start(db);
