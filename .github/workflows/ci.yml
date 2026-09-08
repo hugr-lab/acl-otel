@@ -1,0 +1,147 @@
+# CI, layout after hugr-lab/duckdb-acl: lint + a Linux build-and-test on every PR, a representative
+# macOS build on merges to main and manual runs. Full platform coverage lives in distribution.yml.
+#
+# The whole stack rides duckdb-acl's pin: duckdb's 2.0 release branch `v2.0-cyanoptera` (the base and
+# this extension load on the same instance, so they share one duckdb), extension-ci-tools `main`.
+# A red build means our code or a pin bump - never a floating upstream.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# an explicit `shell: bash` is `bash -eo pipefail`: a suite behind `| tee` fails the step
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: Lint (clang-format)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      # duckdb's pinned formatter, by full path so no runner binary shadows it; `.clang-format` is a
+      # real copy (the template's symlink into the submodule dangles here)
+      - name: Install duckdb's pinned clang-format
+        run: |
+          python3 -m venv /tmp/cf
+          /tmp/cf/bin/pip install clang_format==11.0.1
+          /tmp/cf/bin/clang-format --version
+      - name: clang-format check
+        run: |
+          find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) -print0 \
+            | xargs -0 /tmp/cf/bin/clang-format --dry-run --Werror
+      - name: yamllint
+        run: |
+          pip install yamllint
+          yamllint .github/workflows
+
+  build-test-linux:
+    name: Build + test (linux_amd64)
+    runs-on: ubuntu-24.04
+    env:
+      GEN: ninja
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      # the lint job checks against the repo's copy; this job has the submodules, so it is the one
+      # that can tell when that copy drifts from duckdb's
+      - name: clang-format config is in sync with duckdb
+        run: diff <(tail -n +2 .clang-format) duckdb/.clang-format
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-linux_amd64-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-linux_amd64-${{ hashFiles('.gitmodules') }}-
+            ccache-linux_amd64-
+
+      - name: Build
+        run: |
+          EXT_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache" make
+          ccache -s
+
+      # the artifact must LOAD, not only compile: copied out of the tree and loaded by the CLI
+      - name: The artifact loads
+        run: scripts/ci/smoke_load.sh
+
+      # the floor keeps a suite that silently skipped everything from passing; the beside-acl file
+      # skips here by design (no ACL_EXT on this runner - the base's artifact is the e2e's, spec 001)
+      - name: Unit suites
+        run: |
+          build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
+          scripts/ci/assert_ran.sh suite.log 1 10
+
+      - name: C++ tests
+        run: make test-cpp
+
+      - name: Upload extension artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: acl_otel-linux_amd64
+          path: build/release/extension/acl_otel/acl_otel.duckdb_extension
+
+  # Representative second platform; PRs stay on the Linux job to keep them fast
+  build-test-osx:
+    name: Build + test (osx_arm64)
+    runs-on: macos-14
+    if: ${{ github.event_name != 'pull_request' }}
+    env:
+      GEN: ninja
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: brew install ninja ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-osx_arm64-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-osx_arm64-${{ hashFiles('.gitmodules') }}-
+            ccache-osx_arm64-
+
+      - name: Build
+        run: |
+          EXT_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache" make
+          ccache -s
+
+      - name: The artifact loads
+        run: scripts/ci/smoke_load.sh
+
+      - name: Unit suites
+        run: |
+          build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
+          scripts/ci/assert_ran.sh suite.log 1 10
+
+      - name: C++ tests
+        run: make test-cpp
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: acl_otel-osx_arm64
+          path: build/release/extension/acl_otel/acl_otel.duckdb_extension

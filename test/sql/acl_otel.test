@@ -1,0 +1,111 @@
+# name: test/sql/acl_otel.test
+# description: spec 001 - the extension loads on its own, answers its version and status, takes its
+#   level rules as a JSON document refused at the SET when malformed, refuses a session-scoped SET,
+#   and detaches / re-attaches idempotently.
+# group: [sql]
+
+# a DONT_LINK loadable is invisible to `require`: loaded by build path instead
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/acl_otel/acl_otel.duckdb_extension';
+
+query I
+SELECT acl_otel_version() IS NOT NULL;
+----
+true
+
+# attached at load; the registry exists whether or not acl is here (GetOrCreate on either side)
+query IIII
+SELECT s LIKE '{"attached":true,%', s LIKE '%"acl_loaded":true%', s LIKE '%"exporter":"none (acl_otel_endpoint is empty)"%', s LIKE '%"rules":0%'
+FROM (SELECT acl_otel_status() AS s);
+----
+true	true	true	true
+
+# --- the level rules: a JSON array, first match wins, malformed refused at the SET --------------
+statement ok
+SET GLOBAL acl_otel_level_rules = '[{"role": "analyst", "door": "flight", "level": "all"}, {"issuer": "https://idp.corp/x", "level": "decisions"}, {"level": "denied"}]';
+
+query I
+SELECT acl_otel_status() LIKE '%"rules":3%';
+----
+true
+
+statement error
+SET GLOBAL acl_otel_level_rules = '{"role": "analyst"}';
+----
+<REGEX>:.*acl_otel_level_rules: expected a JSON array of rules.*
+
+statement error
+SET GLOBAL acl_otel_level_rules = '[{"role": "analyst", "level": "loud"}]';
+----
+<REGEX>:.*rule 1 needs a level of off, denied, decisions or all, not "loud".*
+
+statement error
+SET GLOBAL acl_otel_level_rules = '[{"roles": "analyst", "level": "all"}]';
+----
+<REGEX>:.*rule 1 has an unknown key "roles".*
+
+statement error
+SET GLOBAL acl_otel_level_rules = 'not json';
+----
+<REGEX>:.*acl_otel_level_rules: not a JSON document.*
+
+# a refused document leaves the rules as they were
+query I
+SELECT acl_otel_status() LIKE '%"rules":3%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_level_rules = '';
+
+query I
+SELECT acl_otel_status() LIKE '%"rules":0%';
+----
+true
+
+# --- every setting is global: a session-scoped value would show and change nothing ---------------
+statement error
+SET acl_otel_level_rules = '[]';
+----
+<REGEX>:.*acl_otel_level_rules is global - use SET GLOBAL.*
+
+statement error
+SET acl_otel_endpoint = 'http://collector:4318';
+----
+<REGEX>:.*acl_otel_endpoint is global - use SET GLOBAL.*
+
+statement error
+SET acl_otel_queue_size = 5;
+----
+<REGEX>:.*acl_otel_queue_size is global - use SET GLOBAL.*
+
+# --- stop and start, idempotent ------------------------------------------------------------------
+query I
+SELECT acl_otel_stop();
+----
+true
+
+query I
+SELECT acl_otel_stop();
+----
+false
+
+query II
+SELECT s LIKE '{"attached":false,%', s LIKE '%"exporter":"none (stopped)"%' FROM (SELECT acl_otel_status() AS s);
+----
+true	true
+
+query I
+SELECT acl_otel_start();
+----
+true
+
+query I
+SELECT acl_otel_start();
+----
+false
+
+query I
+SELECT acl_otel_status() LIKE '{"attached":true,%';
+----
+true

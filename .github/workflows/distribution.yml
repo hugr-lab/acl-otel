@@ -1,0 +1,40 @@
+# The build community-extensions would run, run here first: the very workflow they call, with the
+# same inputs. Full platform coverage (Windows MSVC/MinGW, musl, linux_arm64, ...) lives here; the
+# PR loop stays on ci.yml's Linux job.
+#
+# Pinned like duckdb-acl: duckdb's 2.0 release branch `v2.0-cyanoptera` and extension-ci-tools `main`
+# (the two load on one instance, so they share one duckdb); re-pin to the `v2.0.0` tag with the base.
+name: Distribution build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+concurrency:
+  group: distribution-${{ github.ref }}
+  # runs fill the ccache; a cancelled one leaves nothing behind for the next
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
+    with:
+      extension_name: acl_otel
+      duckdb_version: v2.0-cyanoptera
+      ci_tools_version: main
+      # wasm is out: the extension ships where the base does, and an exporter is sockets
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads'
+
+  code-quality-check:
+    name: Code Quality Check
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@main
+    with:
+      extension_name: acl_otel
+      duckdb_version: v2.0-cyanoptera
+      ci_tools_version: main
+      format_checks: 'format;tidy'

@@ -1,0 +1,66 @@
+# name: test/sql/acl_otel_beside_acl.test
+# description: spec 001 - loaded beside acl (ACL_EXT names the base's built extension): the base's
+#   events reach the sink, and the level policy decides a session's level when it opens - a role the
+#   rule names is recorded at `all` while the instance sits at `denied`, another role is not.
+# group: [sql]
+
+require-env ACL_EXT
+
+statement ok
+LOAD '${ACL_EXT}';
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/acl_otel/acl_otel.duckdb_extension';
+
+query I
+SELECT acl_otel_status() LIKE '%"acl_loaded":true%';
+----
+true
+
+statement ok
+ATTACH ':memory:' AS store;
+
+statement ok
+SELECT acl_use_db('store', 'acl', true);
+
+statement ok
+SET GLOBAL acl_allow_anonymous_admin=true;
+
+statement ok
+SET GLOBAL acl_audit_level = 'denied';
+
+statement ok
+SELECT acl_define_issuer('https://issuer.test/s',
+    '{"keys":[{"kty":"oct","k":"YWNsLXRlc3QtaHMyNTYtc2VjcmV0"}]}',
+    'api://acl-test', 'HS256', 'roles', '{"tid": "tenant"}');
+
+statement ok
+ACL ADMIN CREATE VIRTUAL CATALOG c;
+
+statement ok
+ACL ADMIN CREATE ROLE analyst;
+
+statement ok
+ACL ADMIN GRANT CATALOG c TO ROLE analyst WITH (select) MAIN;
+
+# the rule: the analyst's sessions through the gateway door are recorded at `all`
+statement ok
+SET GLOBAL acl_otel_level_rules = '[{"role": "analyst", "level": "all"}]';
+
+# an allowed statement on that session is recorded although the instance is at `denied`
+statement ok
+SELECT acl_session_open('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2lzc3Vlci50ZXN0L3MiLCJhdWQiOiJhcGk6Ly9hY2wtdGVzdCIsImV4cCI6NDEwMjQ0NDgwMCwic3ViIjoidWEiLCJyb2xlcyI6WyJhbmFseXN0Il0sInRpZCI6ImFjbWUifQ.pj_vV6OmT_k_3y1MWLBTC_SjngWPkzsFS5K0iULL6OM') AS h;
+
+statement ok
+SELECT acl_audit_flush();
+
+query I
+SELECT count(*) > 0 FROM acl_audit_events() WHERE kind = 'session' AND detail = 'opened' AND level = 'all';
+----
+true
+
+# ...and the sink saw them: the extension counts what the base handed it
+query I
+SELECT acl_otel_status() LIKE '%"received":0%';
+----
+false
