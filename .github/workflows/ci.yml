@@ -114,6 +114,13 @@ jobs:
       - name: C++ tests
         run: make test-cpp
 
+      # the community pipeline's Tidy Check configures without vcpkg and cannot build this
+      # extension at all, so tidy lives here, where the SDK and the compile database are
+      - name: clang-tidy
+        run: |
+          sudo apt-get install -y -qq clang-tidy
+          make tidy-ci
+
       # spec 001's proof: two loadables on one instance - the base's REAL artifact, from duckdb-acl's
       # latest green main run (same duckdb pin: bumped together, CLAUDE.md), beside ours. The
       # beside-acl file needs ACL_EXT and skips without it, so a run without this step proves the

@@ -161,7 +161,7 @@ void LoadInternal(ExtensionLoader &loader) {
 	                          SetScope::GLOBAL);
 
 	auto register_scalar = [&](const char *name, const LogicalType &returns, scalar_function_t fn) {
-		ScalarFunction function(Identifier(name), {}, returns, fn);
+		ScalarFunction function(Identifier(name), {}, returns, std::move(fn));
 		// volatile: each call reads the state as it is now; a folded call would answer the plan's moment
 		function.SetVolatile();
 		function.SetFallible();

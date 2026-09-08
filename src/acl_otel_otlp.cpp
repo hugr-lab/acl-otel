@@ -223,8 +223,7 @@ OtlpConfig OtlpConfig::From(DatabaseInstance &db) {
 #ifndef _WIN32
 		gethostname(host, sizeof(host));
 #endif
-		config.instance_id =
-		    string(host[0] ? host : "node") + ":" + std::to_string(static_cast<long long>(ACL_OTEL_PID));
+		config.instance_id = string(host[0] ? host : "node") + ":" + std::to_string(static_cast<int64_t>(ACL_OTEL_PID));
 	}
 	config.duckdb_version = DuckDB::LibraryVersion();
 #ifdef EXT_VERSION_ACL_OTEL

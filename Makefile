@@ -69,6 +69,33 @@ test-cpp-run: $(TEST_CPP_BINS)
 		else echo "  FAIL $$(basename $$b)"; cat "$$b.log"; fail=1; fi; \
 	done; [ $$fail = 0 ]
 
+# --- clang-tidy ---------------------------------------------------------------------------------
+# The community pipeline's Tidy Check cannot run here (it configures without vcpkg, and this
+# extension needs the SDK to configure at all), so tidy is ours: over our own sources, against the
+# compile database the release build already wrote. macOS needs homebrew's LLVM and an -isysroot;
+# a Linux runner has run-clang-tidy on PATH.
+LLVM_BIN ?= $(shell ls -d /opt/homebrew/opt/llvm/bin 2>/dev/null || echo /usr/bin)
+TIDY_SOURCES := $(wildcard src/*.cpp)
+TIDY_SYSROOT := $(shell xcrun --show-sdk-path 2>/dev/null)
+
+.PHONY: tidy
+tidy:
+	@test -f build/release/compile_commands.json || { \
+		echo "tidy: no compile database - run 'GEN=ninja make' first" >&2; exit 1; }
+	@$(LLVM_BIN)/run-clang-tidy -clang-tidy-binary $(LLVM_BIN)/clang-tidy -p build/release -quiet \
+		-header-filter='.*/acl-otel/src/include/.*' \
+		$(if $(TIDY_SYSROOT),-extra-arg=-isysroot -extra-arg=$(TIDY_SYSROOT),) \
+		$(abspath $(TIDY_SOURCES)) 2>/dev/null \
+		| grep -E '^$(CURDIR)/src/[^ ]+:[0-9]+:[0-9]+: (warning|error)' | sort -u \
+		| sed 's|^$(CURDIR)/||' ; true
+
+# what CI runs: the same, but a finding fails the step
+.PHONY: tidy-ci
+tidy-ci:
+	@out="$$($(MAKE) --no-print-directory tidy)"; \
+		if [ -n "$$out" ]; then echo "$$out"; echo "tidy: findings above" >&2; exit 1; fi; \
+		echo "tidy: clean"
+
 # Bootstrap a local vcpkg checkout (the standard duckdb-extension dependency flow)
 .PHONY: vcpkg-setup
 vcpkg-setup:
