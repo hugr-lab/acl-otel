@@ -133,10 +133,11 @@ extension-ci-tools.
   not values.
 - A failed export is counted and dropped - the node never blocks on the backend, and never buffers
   across a restart (§6).
-- The SDK's log is process-wide: an error another exporter logs during an export - the old
-  transport shutting down at a reconfigure - is attributed to the batch in flight, which is then
-  counted as failed although it arrived. A mis-count of one batch at a SET, never a lost event;
-  the counter is the operator's signal, not an accounting.
+- The SDK's log is process-wide: an error another exporter in this process logs during an export -
+  the old transport shutting down at a reconfigure, a second `DatabaseInstance`'s exporter - is
+  attributed to the batch in flight, which is then counted as failed although it arrived. A
+  mis-count of one batch, never a lost event; the counter is the operator's signal, not an
+  accounting.
 
 ## Testing
 
