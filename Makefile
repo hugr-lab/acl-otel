@@ -51,6 +51,9 @@ $(TEST_CPP_DIR)/test_acl_otel_sink: TEST_CPP_EXTRA := src/acl_otel_sink.cpp src/
 $(TEST_CPP_DIR)/test_acl_otel_sampling: TEST_CPP_EXTRA := src/acl_otel_sampling.cpp \
 	duckdb/third_party/yyjson/yyjson.cpp
 $(TEST_CPP_DIR)/test_acl_otel_sampling: src/acl_otel_sampling.cpp src/include/acl_otel.hpp
+$(TEST_CPP_DIR)/test_acl_otel_health: TEST_CPP_EXTRA := src/acl_otel_sampling.cpp \
+	duckdb/third_party/yyjson/yyjson.cpp
+$(TEST_CPP_DIR)/test_acl_otel_health: src/acl_otel_sampling.cpp src/include/acl_otel.hpp
 $(TEST_CPP_DIR)/test_acl_otel_sink: src/acl_otel_sink.cpp src/acl_otel_metrics.cpp src/include/acl_otel.hpp
 $(TEST_CPP_DIR)/test_acl_otel_metrics: TEST_CPP_EXTRA := src/acl_otel_metrics.cpp duckdb/third_party/yyjson/yyjson.cpp
 $(TEST_CPP_DIR)/test_acl_otel_metrics: src/acl_otel_metrics.cpp src/include/acl_otel_metrics.hpp

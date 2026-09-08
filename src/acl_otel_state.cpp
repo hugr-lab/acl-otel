@@ -17,6 +17,15 @@ namespace acl_otel {
 
 namespace {
 
+int64_t NowMicros() {
+	return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch())
+	    .count();
+}
+
+} // namespace
+
+namespace {
+
 string JsonQuote(const string &value) {
 	string out = "\"";
 	for (auto c : value) {
@@ -129,6 +138,11 @@ bool OtelState::Start(DatabaseInstance &db) {
 		Value sums;
 		metrics->SetHistogramSums(!db.TryGetCurrentSetting("acl_otel_histogram_sums", sums) || sums.IsNull() ||
 		                          sums.GetValue<bool>());
+		// `this` and the instance outlive the scrape by construction: Stop() joins its thread, and
+		// ~OtelState calls Stop() before anything of ours is gone. The reader is cleared there too.
+		auto *state = this;
+		auto *instance = &db;
+		metrics->SetSelfMetrics([state, instance]() { return state->SelfMetrics(*instance); });
 		sink->SetMetrics(metrics);
 		metrics->Start(hooks);
 	}
@@ -188,6 +202,86 @@ void OtelState::SetHistogramSums(bool on) {
 	}
 }
 
+//! R7.2: the extension's own numbers as metric points. Read from the sink and the scrape, named
+//! `acl_otel.` so a dashboard never confuses the node's numbers with its reporter's.
+vector<MetricPoint> OtelState::SelfMetrics(DatabaseInstance &db) {
+	shared_ptr<OtelSink> current;
+	shared_ptr<OtelMetrics> scrape;
+	bool is_attached;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		current = sink;
+		scrape = metrics;
+		is_attached = attached;
+	}
+	vector<MetricPoint> points;
+	auto counter = [&](const char *name, int64_t value, const Labels &labels, const char *description) {
+		points.push_back(MetricPoint {name, labels, value, true, "1", description});
+	};
+	auto gauge = [&](const char *name, int64_t value, const char *description) {
+		points.push_back(MetricPoint {name, {}, value, false, "1", description});
+	};
+	if (current) {
+		auto &stats = current->stats;
+		counter("acl_otel.received", stats.received.load(), {}, "audit events this sink was handed");
+		counter("acl_otel.exported", stats.exported.load(), {}, "audit events a backend received");
+		counter("acl_otel.dropped", stats.dropped_queue.load(), {{"why", "queue"}}, "audit events lost, by why");
+		counter("acl_otel.dropped", stats.dropped_no_exporter.load(), {{"why", "no_exporter"}},
+		        "audit events lost, by why");
+		counter("acl_otel.dropped", stats.export_errors.load(), {{"why", "export_error"}}, "audit events lost, by why");
+		counter("acl_otel.dropped", stats.sampled.load(), {{"why", "sampled"}},
+		        "audit events not exported by policy (spec 005), counted apart from a loss");
+		counter("acl_otel.export_errors", stats.exported_batches_failed.load(), {}, "batches a backend refused");
+		gauge("acl_otel.queue_fill", NumericCast<int64_t>(current->QueueFill()), "events waiting to be exported");
+	}
+	if (scrape) {
+		counter("acl_otel.metrics_ticks", scrape->stats.ticks.load(), {}, "metric scrapes attempted");
+		counter("acl_otel.metrics_errors", scrape->stats.export_errors.load(), {}, "metric scrapes a backend refused");
+	}
+	gauge("acl_otel.attached", is_attached ? 1 : 0, "1 while this extension is on the base's audit registry");
+	gauge("acl_otel.healthy", Healthy(db) ? 1 : 0,
+	      "0 while acl_otel_strict is on and this node is losing events, or is not attached (R7.3)");
+	return points;
+}
+
+//! R7.3: strict is what gives the gauge teeth. Without it a node is always healthy - an operator who
+//! did not ask for the signal is not given an alert.
+bool OtelState::Healthy(DatabaseInstance &db) {
+	Value strict;
+	bool is_strict = db.TryGetCurrentSetting("acl_otel_strict", strict) && !strict.IsNull() && strict.GetValue<bool>();
+	if (!is_strict) {
+		return true;
+	}
+	shared_ptr<OtelSink> current;
+	bool is_attached;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		current = sink;
+		is_attached = attached;
+	}
+	if (!is_attached || !current) {
+		return false; // nothing is being delivered at all
+	}
+	shared_ptr<OtelMetrics> scrape;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		scrape = metrics;
+	}
+	// What a policy leaves out (spec 005's sampling) is not a loss; an audit event that was recorded
+	// and never delivered is - whether the queue was full, nothing was configured to send it, or a
+	// backend refused the batch. A metric scrape a backend refused counts too: the node's numbers
+	// did not arrive either. A scrape that had no endpoint to send to does NOT - a quiet node with
+	// no endpoint has lost nothing.
+	auto &stats = current->stats;
+	auto drops = stats.dropped_queue.load() + stats.dropped_no_exporter.load() + stats.export_errors.load();
+	if (scrape) {
+		drops += scrape->stats.export_errors.load();
+	}
+	auto window = SettingInt64(db, "acl_otel_health_window", 60);
+	std::lock_guard<std::mutex> guard(lock);
+	return !health.Losing(drops, NowMicros(), window);
+}
+
 bool OtelState::FlushMetrics() {
 	shared_ptr<OtelMetrics> current;
 	shared_ptr<acl::AuditHooks> registry;
@@ -218,7 +312,8 @@ bool OtelState::Stop() {
 		}
 	}
 	if (ending_metrics) {
-		ending_metrics->Stop(); // outside the lock: its thread may be mid-export
+		ending_metrics->Stop();                  // outside the lock: its thread may be mid-export
+		ending_metrics->SetSelfMetrics(nullptr); // nothing of ours is read after this point
 	}
 	// outside the lock: the worker may be mid-export, and Stop waits for it
 	if (ending) {
@@ -397,6 +492,17 @@ string OtelState::StatusJson(DatabaseInstance &db) {
 		metrics_now = metrics;
 	}
 	json += ",\"metrics\":" + (metrics_now ? metrics_now->StatusJson() : string("null"));
+	// spec 006: what an orchestrator reads, and why it reads what it reads
+	Value strict;
+	bool is_strict = db.TryGetCurrentSetting("acl_otel_strict", strict) && !strict.IsNull() && strict.GetValue<bool>();
+	json += ",\"strict\":" + string(is_strict ? "true" : "false");
+	json += ",\"healthy\":" + string(Healthy(db) ? "true" : "false");
+	int64_t since = 0;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		since = health.LosingSince();
+	}
+	json += ",\"losing_since_us\":" + (since > 0 ? std::to_string(since) : string("null"));
 	if (current) {
 		auto &stats = current->stats;
 		json += ",\"queue_fill\":" + std::to_string(current->QueueFill());

@@ -43,6 +43,7 @@ bool RuleMatches(const LevelRule &rule, const acl::Principal &principal, const s
 
 class OtelMetrics;     // spec 003, acl_otel_metrics.hpp
 class MetricsExporter; // its transport seam
+struct MetricPoint;    // one number as a transport receives it
 
 //! Spec 005: which `allowed` statements are kept. A ratio ('0.1'), or a JSON object per role
 //! ({"analyst": 0.05, "*": 0.5}) where `*` covers a role the object does not name; a principal with
@@ -68,6 +69,23 @@ private:
 	bool everything = true;
 	double fallback = 1.0;            // the ratio with no role named, or `*`
 	std::map<string, double> by_role; // the roles the document names
+};
+
+//! Spec 006 (R7.3): is this node losing events, and for how long. A pure judgement over the drop
+//! counters, the clock and a window - the tests hand it their own clock rather than sleeping.
+class Health {
+public:
+	//! `drops` is every loss that is NOT a policy (queue + no_exporter + export errors; never
+	//! sampling). True while the count has grown within `window_s` of `now_us`.
+	bool Losing(int64_t drops, int64_t now_us, int64_t window_s);
+	//! when the last loss was seen, 0 when there has been none
+	int64_t LosingSince() const {
+		return since_us;
+	}
+
+private:
+	int64_t seen = -1; // -1 = never judged: the first judgement only takes a baseline
+	int64_t since_us = 0;
 };
 
 //! The extension's own numbers (R7): every event received, exported, dropped (by why), failed.
@@ -208,6 +226,11 @@ public:
 	bool Flush();
 	//! spec 003: export one metrics tick now (acl_otel_metrics_flush); false when metrics are off
 	bool FlushMetrics();
+	//! spec 006 (R7.2/R7.3): 1 unless `acl_otel_strict` is on and this node is losing events or is
+	//! not attached at all. Judged here, from the sink's own counters and the clock.
+	bool Healthy(DatabaseInstance &db);
+	//! the extension's own numbers, as metric points for the scrape (R7.2)
+	vector<MetricPoint> SelfMetrics(DatabaseInstance &db);
 	void SetRulesJson(const string &json); // parses, then hot-reloads the policy (R3.1)
 	//! spec 005: the sampler from `acl_otel_sample_allowed`, parsed (and refused) at the SET
 	void SetSampling(const string &document);
@@ -237,6 +260,7 @@ private:
 	shared_ptr<MetricsExporter> BuildMetricsExporter(DatabaseInstance &db, const string &changed, const Value &value);
 	vector<string> header_names;    // under `lock`
 	string sampling_document = "1"; // under `lock`, spec 005: kept for a restart
+	Health health;                  // under `lock`, spec 006
 	string attach_error;            // under `lock`: why the last Start refused to attach, '' when it did
 	std::mutex lock;
 	shared_ptr<acl::AuditHooks> hooks; // held: the registry outlives our sink's removal

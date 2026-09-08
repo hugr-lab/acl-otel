@@ -318,6 +318,11 @@ void OtelMetrics::SetExporter(shared_ptr<MetricsExporter> exporter_p) {
 	// same lock on the base's audit thread
 }
 
+void OtelMetrics::SetSelfMetrics(std::function<vector<MetricPoint>()> reader) {
+	std::lock_guard<std::mutex> guard(lock);
+	self_metrics = std::move(reader);
+}
+
 void OtelMetrics::SetHistogramSums(bool on) {
 	std::lock_guard<std::mutex> guard(lock);
 	histogram_sums = on;
@@ -396,9 +401,11 @@ MetricsSnapshot OtelMetrics::Build(acl::AuditHooks &hooks) {
 	take(counters, true);
 	take(gauges, false);
 	bool with_sums = false;
+	std::function<vector<MetricPoint>()> mine;
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		with_sums = histogram_sums;
+		mine = self_metrics;
 		snapshot.histograms = histograms; // a copy: the accumulation goes on while this is exported
 		for (auto &one : series) {
 			for (auto &entry : one->Points()) {
@@ -411,6 +418,12 @@ MetricsSnapshot OtelMetrics::Build(acl::AuditHooks &hooks) {
 				point.description = "decisions, by a label the operator asked for (spec 003)";
 				snapshot.points.push_back(std::move(point));
 			}
+		}
+	}
+	// R7.2: the extension's own numbers, beside the node's and never confused with them (acl_otel.)
+	if (mine) {
+		for (auto &point : mine()) {
+			snapshot.points.push_back(point);
 		}
 	}
 	// R2.5: the pair a bridge that cannot ingest a histogram still understands

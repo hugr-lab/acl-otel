@@ -1,0 +1,90 @@
+# name: test/sql/acl_otel_health.test
+# description: spec 006 - the extension reports on itself, and acl_otel_healthy() is 1 unless strict is on and the node is losing events or is not attached
+# group: [sql]
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/extension/acl_otel/acl_otel.duckdb_extension';
+
+# both settings are the operator's
+statement error
+SET acl_otel_strict = true;
+----
+<REGEX>:.*acl_otel_strict is global - use SET GLOBAL.*
+
+statement error
+SET acl_otel_health_window = 5;
+----
+<REGEX>:.*acl_otel_health_window is global - use SET GLOBAL.*
+
+# a quiet node is healthy, and says why in the status
+query III
+SELECT acl_otel_healthy(), s LIKE '%"strict":false%', s LIKE '%"healthy":true%'
+FROM (SELECT acl_otel_status() AS s);
+----
+true	true	true
+
+# strict alone changes nothing on a node that is not losing anything
+statement ok
+SET GLOBAL acl_otel_strict = true;
+
+query II
+SELECT acl_otel_healthy(), acl_otel_status() LIKE '%"losing_since_us":null%';
+----
+true	true
+
+# an endpoint nobody listens on: the first flush fails, and a strict node says so
+statement ok
+SET GLOBAL acl_otel_timeout = 1;
+
+statement ok
+SET GLOBAL acl_otel_endpoint = 'http://127.0.0.1:1';
+
+statement ok
+SELECT acl_otel_metrics_flush();
+
+query II
+SELECT acl_otel_healthy(), acl_otel_status() LIKE '%"losing_since_us":null%';
+----
+false	false
+
+# the same node without strict is healthy: an operator who did not ask for the signal gets no alert
+statement ok
+SET GLOBAL acl_otel_strict = false;
+
+query II
+SELECT acl_otel_healthy(), acl_otel_status() LIKE '%"healthy":true%';
+----
+true	true
+
+# a window of zero is a node that never reports unhealthy, whatever it loses
+statement ok
+SET GLOBAL acl_otel_strict = true;
+
+statement ok
+SET GLOBAL acl_otel_health_window = 0;
+
+query I
+SELECT acl_otel_healthy();
+----
+true
+
+# detached is unhealthy under strict: nothing is being delivered at all
+statement ok
+SET GLOBAL acl_otel_health_window = 60;
+
+statement ok
+SELECT acl_otel_stop();
+
+query II
+SELECT acl_otel_healthy(), acl_otel_status() LIKE '%"attached":false%';
+----
+false	true
+
+statement ok
+SELECT acl_otel_start();
+
+statement ok
+SET GLOBAL acl_otel_endpoint = '';
+
+statement ok
+SET GLOBAL acl_otel_strict = false;
