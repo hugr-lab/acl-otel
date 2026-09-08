@@ -6,6 +6,8 @@
 #include "acl_otel_otlp.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/error_data.hpp"
+#include "duckdb/main/connection.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/config.hpp"
 
@@ -152,6 +154,23 @@ bool OtelState::Start(DatabaseInstance &db) {
 	return true;
 }
 
+//! spec 007: the reader runs only when a table is named, and reads once at once so a node that just
+//! started is not a whole interval behind the fleet
+void OtelState::StartRules(DatabaseInstance &db) {
+	auto table = SettingString(db, "acl_otel_rules_table", "");
+	StringUtil::Trim(table);
+	if (table.empty()) {
+		StopRulesReader();
+		return;
+	}
+	try {
+		RefreshRules(db);
+	} catch (std::exception &) {
+		// the status carries the reason; the reader will try again on its own clock
+	}
+	StartRulesReader(db);
+}
+
 //! `acl_otel_series` / `_claim_dimension` / `_max_series` / `_series_allowlist` in one place: the
 //! opt-in series of R2.3, rebuilt whenever one of them changes.
 void OtelState::ApplySeriesSettings(DatabaseInstance &db, OtelMetrics &target) {
@@ -294,6 +313,7 @@ bool OtelState::FlushMetrics() {
 }
 
 bool OtelState::Stop() {
+	StopRulesReader(); // first: a thread that queries a database must never outlive the database
 	shared_ptr<OtelSink> ending;
 	shared_ptr<OtelMetrics> ending_metrics;
 	{
@@ -348,6 +368,129 @@ void OtelState::SetRulesJson(const string &json) {
 		policy = make_shared_ptr<OtelPolicy>();
 	}
 	policy->SetRules(std::move(rules));
+}
+
+//! spec 007: the central table, read on a connection of ours. A failed or malformed read leaves the
+//! rules exactly as they were - a fleet's configuration mistake must never quietly switch a node's
+//! auditing off - and says what happened in the status.
+idx_t OtelState::RefreshRules(DatabaseInstance &db) {
+	auto table = SettingString(db, "acl_otel_rules_table", "");
+	StringUtil::Trim(table);
+	if (table.empty()) {
+		std::lock_guard<std::mutex> guard(lock);
+		rules_error.clear();
+		return rules_in_force;
+	}
+	auto cap = MaxValue<int64_t>(SettingInt64(db, "acl_otel_max_rules", 1000), 1);
+	// the table is the operator's own name, not a principal's input: quoted as an identifier path so
+	// a name with a dot or a space still reads, and never concatenated from anything an event carried
+	string query = "SELECT seq, role, subject, issuer, door, level FROM " + table + " ORDER BY seq LIMIT " +
+	               std::to_string(cap + 1);
+	Connection con(db);
+	auto result = con.Query(query);
+	if (result->HasError()) {
+		std::lock_guard<std::mutex> guard(lock);
+		rules_error = result->GetError();
+		throw InvalidInputException("acl_otel: the rules table could not be read: %s", rules_error);
+	}
+	vector<LevelRule> parsed;
+	string trouble;
+	auto text = [](const Value &value) {
+		return value.IsNull() ? string() : value.ToString();
+	};
+	for (idx_t row = 0; row < result->RowCount(); row++) {
+		if (parsed.size() >= NumericCast<idx_t>(cap)) {
+			trouble = "the rules table holds more than acl_otel_max_rules (" + std::to_string(cap) + ") rows";
+			break;
+		}
+		auto seq = result->GetValue(0, row);
+		try {
+			parsed.push_back(RuleFromRow(text(result->GetValue(1, row)), text(result->GetValue(2, row)),
+			                             text(result->GetValue(3, row)), text(result->GetValue(4, row)),
+			                             text(result->GetValue(5, row)),
+			                             seq.IsNull() ? NumericCast<int64_t>(row) : seq.GetValue<int64_t>()));
+		} catch (std::exception &ex) {
+			trouble = ErrorData(ex).RawMessage();
+			break;
+		}
+	}
+	if (!trouble.empty()) {
+		std::lock_guard<std::mutex> guard(lock);
+		rules_error = trouble;
+		throw InvalidInputException("acl_otel: %s", trouble);
+	}
+	auto count = parsed.size();
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		rules_error.clear();
+		rules_read_us = NowMicros();
+		rules_in_force = count;
+		// the JSON setting wins while it is set (§5): the table is read, kept, and not applied
+		if (!rules_json.empty() && rules_json != "[]") {
+			return count;
+		}
+		if (!policy) {
+			policy = make_shared_ptr<OtelPolicy>();
+		}
+		policy->SetRules(std::move(parsed));
+	}
+	return count;
+}
+
+string OtelState::RulesSource(DatabaseInstance &db) {
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if (!rules_json.empty() && rules_json != "[]") {
+			return "setting";
+		}
+	}
+	auto table = SettingString(db, "acl_otel_rules_table", "");
+	StringUtil::Trim(table);
+	return table.empty() ? "none" : "table";
+}
+
+void OtelState::StartRulesReader(DatabaseInstance &db) {
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if (rules_worker.joinable()) {
+			return;
+		}
+		rules_stopping = false;
+	}
+	auto *instance = &db; // outlives the thread: StopRulesReader joins it, and ~OtelState calls it
+	rules_worker = std::thread([this, instance] { ReadRules(*instance); });
+}
+
+void OtelState::StopRulesReader() {
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if (rules_stopping) {
+			return;
+		}
+		rules_stopping = true;
+	}
+	rules_wake.notify_all();
+	if (rules_worker.joinable()) {
+		rules_worker.join();
+	}
+}
+
+void OtelState::ReadRules(DatabaseInstance &db) {
+	std::unique_lock<std::mutex> guard(lock);
+	while (!rules_stopping) {
+		auto seconds = MaxValue<int64_t>(SettingInt64(db, "acl_otel_rules_interval", 30), 1);
+		rules_wake.wait_for(guard, std::chrono::seconds(seconds), [this] { return rules_stopping; });
+		if (rules_stopping) {
+			return;
+		}
+		guard.unlock();
+		try {
+			RefreshRules(db);
+		} catch (std::exception &) {
+			// the status already carries the reason; a reader that throws is a reader that stops
+		}
+		guard.lock();
+	}
 }
 
 void OtelState::SetSampling(const string &document) {
@@ -503,6 +646,14 @@ string OtelState::StatusJson(DatabaseInstance &db) {
 		since = health.LosingSince();
 	}
 	json += ",\"losing_since_us\":" + (since > 0 ? std::to_string(since) : string("null"));
+	// spec 007: where the rules came from, and whether the last read of the table worked
+	json += ",\"rules_source\":" + JsonQuote(RulesSource(db));
+	json += ",\"rules_table\":" + JsonQuote(SettingString(db, "acl_otel_rules_table", ""));
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		json += ",\"rules_read_us\":" + (rules_read_us > 0 ? std::to_string(rules_read_us) : string("null"));
+		json += ",\"rules_error\":" + (rules_error.empty() ? string("null") : JsonQuote(rules_error));
+	}
 	if (current) {
 		auto &stats = current->stats;
 		json += ",\"queue_fill\":" + std::to_string(current->QueueFill());

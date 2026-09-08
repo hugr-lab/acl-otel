@@ -131,5 +131,35 @@ idx_t OtelPolicy::RuleCount() {
 	return rules.size();
 }
 
+//! spec 007: one row of the central table. NULL, '' and '*' all mean "any" - the same three ways of
+//! saying it that the JSON document accepts - and an unknown level names the row it came from.
+LevelRule RuleFromRow(const string &role, const string &subject, const string &issuer, const string &door,
+                      const string &level, int64_t seq) {
+	auto any = [](const string &value) {
+		return value == "*" ? string() : value;
+	};
+	LevelRule rule;
+	rule.role = any(role);
+	rule.subject = any(subject);
+	rule.issuer = any(issuer);
+	rule.door = any(door);
+	auto text = level;
+	StringUtil::Trim(text);
+	text = StringUtil::Lower(text);
+	if (text == "off") {
+		rule.level = acl::AuditLevel::OFF;
+	} else if (text == "denied") {
+		rule.level = acl::AuditLevel::DENIED;
+	} else if (text == "decisions") {
+		rule.level = acl::AuditLevel::DECISIONS;
+	} else if (text == "all") {
+		rule.level = acl::AuditLevel::ALL;
+	} else {
+		throw InvalidInputException(
+		    "the rules table: row %lld needs a level of off, denied, decisions or all, not '%s'", seq, level);
+	}
+	return rule;
+}
+
 } // namespace acl_otel
 } // namespace duckdb

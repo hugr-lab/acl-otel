@@ -41,7 +41,12 @@ in the base; what is built so far is in [`specs/`](specs/README.md).
   `acl_otel_health_window` seconds after the last loss, and `acl_otel_healthy()` answers the same
   for a readiness probe. Strict never refuses a statement - the base emits after the decision, so
   there is nothing left to refuse.
-- Not yet: per-connection logging (004), rules kept in the policy catalog (007).
+- **Spec 007 (the rules a fleet writes once)**: point `acl_otel_rules_table` at a table
+  (`acl_otel_create_rules_table()` creates it, by hand, once) and every node reads it every
+  `acl_otel_rules_interval` seconds on a connection of its own. A failed or malformed read leaves
+  the rules in force and says so in the status; `acl_otel_level_rules` wins while it is set, for a
+  node an operator is debugging.
+- Not yet: per-connection logging (004), which has one design decision open.
 
 ```sql
 LOAD acl;
@@ -72,6 +77,7 @@ SELECT acl_otel_flush();      -- export what is queued now and wait for it
 | `acl_otel_claim_attributes` | `''` | the claims whose values may be exported, as `acl.claim.<name>`; at most 16 |
 | `acl_otel_sample_allowed` | `1` | the ratio of ALLOWED statements exported, or a JSON object per role; a refusal is never sampled |
 | `acl_otel_strict` / `_health_window` | `false` / `60` | report `acl_otel.healthy = 0` while events are being lost, and for how long after the last one |
+| `acl_otel_rules_table` / `_rules_interval` / `_max_rules` | `''` / `30` / `1000` | the table the level rules are read from, how often, and how many at most |
 
 A setting at its default means the standard environment decides, so a container configured the
 OpenTelemetry way needs no SET; a setting that is set wins over its variable.

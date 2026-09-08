@@ -74,6 +74,30 @@ int main() {
 	policy.SetRules({});
 	Check(!policy.LevelFor(Someone("u9", "https://other", {"viewer"}), "gateway", level),
 	      "rules cleared: no opinion again");
+	{
+		// spec 007: one row of the central table. NULL, '' and '*' are three ways of saying "any".
+		auto any = acl_otel::RuleFromRow("*", "", "", "", "all", 1);
+		Check(any.role.empty() && any.subject.empty() && any.issuer.empty() && any.door.empty(),
+		      "a row of stars and blanks matches anything");
+		Check(any.level == acl::AuditLevel::ALL, "...at the level it names");
+		auto one = acl_otel::RuleFromRow("analyst", "u7", "https://idp/x", "flight", "DENIED", 2);
+		Check(one.role == "analyst" && one.subject == "u7" && one.issuer == "https://idp/x" && one.door == "flight",
+		      "a row with values keeps them");
+		Check(one.level == acl::AuditLevel::DENIED, "and the level is read whatever its case");
+		acl::Principal principal;
+		principal.roles = {"analyst"};
+		principal.subject = "u7";
+		principal.issuer = "https://idp/x";
+		Check(acl_otel::RuleMatches(one, principal, "flight"), "the rule a row became matches what it names");
+		Check(!acl_otel::RuleMatches(one, principal, "quack"), "...and not another door");
+		bool refused = false;
+		try {
+			acl_otel::RuleFromRow("", "", "", "", "loud", 7);
+		} catch (std::exception &ex) {
+			refused = string(ErrorData(ex).RawMessage()).find("row 7") != string::npos;
+		}
+		Check(refused, "an unknown level names the row it came from");
+	}
 	std::printf("PASS\n");
 	return 0;
 }
