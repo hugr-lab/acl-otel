@@ -49,14 +49,19 @@ void OtelSink::OnEvent(const acl::AuditEvent &event) {
 }
 
 void OtelSink::Flush() {
+	FlushNow();
+}
+
+bool OtelSink::FlushNow() {
 	std::unique_lock<std::mutex> guard(lock);
 	if (stopping) {
-		return;
+		return false;
 	}
 	flush_requested = true;
 	wake.notify_one();
 	// bounded: the base calls this on its audit thread, and a transport that hangs must not hold it
 	drained.wait_for(guard, std::chrono::seconds(2), [this] { return !flush_requested || stopping; });
+	return !flush_requested && !stopping;
 }
 
 void OtelSink::SetExporter(shared_ptr<Exporter> exporter_p) {
@@ -67,6 +72,11 @@ void OtelSink::SetExporter(shared_ptr<Exporter> exporter_p) {
 string OtelSink::ExporterName() {
 	std::lock_guard<std::mutex> guard(lock);
 	return exporter->Describe();
+}
+
+string OtelSink::LastError() {
+	std::lock_guard<std::mutex> guard(lock);
+	return stats.last_error;
 }
 
 idx_t OtelSink::QueueFill() {
@@ -133,6 +143,7 @@ void OtelSink::ExportBatch(vector<acl::AuditEvent> &batch) {
 		return;
 	}
 	stats.export_errors += NumericCast<int64_t>(batch.size());
+	stats.exported_batches_failed++;
 	std::lock_guard<std::mutex> guard(lock);
 	stats.last_error = error;
 }

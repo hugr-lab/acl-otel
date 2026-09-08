@@ -37,3 +37,4 @@ specs are the shareable distillation of that work.
 | Spec | Title | Status |
 | --- | --- | --- |
 | [001](001-architecture/spec.md) | the architecture - one header, one registry, and the wiring that proves it | implemented |
+| [002](002-otlp-logs/spec.md) | OTLP logs - every audit event one OpenTelemetry log record, over HTTP/protobuf or gRPC | implemented |

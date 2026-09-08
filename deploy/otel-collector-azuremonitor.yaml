@@ -1,0 +1,48 @@
+# A reference OpenTelemetry Collector configuration for acl_otel (spec 002, R1.6): the node exports
+# its audit records to this Collector over OTLP, and the Collector forwards them to Application
+# Insights through the contrib distribution's `azuremonitor` exporter. The mapping is by
+# construction - `service.name` becomes cloud_RoleName, `service.instance.id` cloud_RoleInstance,
+# the flat `acl.*` attributes customDimensions, INFO/WARN/ERROR severityLevel 1/2/3, the trace
+# context operation_Id / operation_ParentId - so nothing here rewrites a record.
+#
+#   docker run --rm -p 4317:4317 -p 4318:4318 \
+#     -e APPLICATIONINSIGHTS_CONNECTION_STRING="InstrumentationKey=...;IngestionEndpoint=..." \
+#     -v "$PWD/deploy/otel-collector-azuremonitor.yaml:/etc/otelcol-contrib/config.yaml" \
+#     otel/opentelemetry-collector-contrib:0.116.0
+#
+# then on the node: SET GLOBAL acl_otel_endpoint = 'http://<collector>:4318';  (or :4317 + grpc)
+#
+# The connection string is a secret: it stays in the Collector's environment, never in a duckdb
+# setting (R9.2). A Collector that fronts the public network should terminate TLS on the receivers
+# and require a bearer header - `OTEL_EXPORTER_OTLP_HEADERS` on the node's side.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # what the SDK already batched, batched again for the backend's benefit; the memory limiter keeps
+  # a burst of denials from taking the Collector down with it
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  azuremonitor:
+    connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+  # a second copy on the Collector's stdout while wiring it up; drop it in production
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [azuremonitor, debug]

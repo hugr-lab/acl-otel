@@ -4,9 +4,22 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXT_NAME=acl_otel
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-# No vcpkg yet: the first slice (spec 001) is the contract wiring and needs nothing beyond duckdb.
-# spec 002 brings the OpenTelemetry C++ SDK through vcpkg (opentelemetry-cpp[otlp-grpc,otlp-http]),
-# with the merged-manifest block and the fail-fast guard duckdb-acl's Makefile carries.
+# The OpenTelemetry C++ SDK (spec 002) comes from vcpkg - opentelemetry-cpp with the OTLP HTTP and
+# gRPC exporters (§5 of the contract: no vendoring) - through the merged-manifest flow every duckdb
+# extension uses. Bootstrap once with `make vcpkg-setup`, or point VCPKG_TOOLCHAIN_PATH at an
+# existing checkout (duckdb-acl's works: the same baseline, and its binary cache already holds
+# grpc, protobuf, abseil and curl).
+USE_MERGED_VCPKG_MANIFEST := 1
+VCPKG_TOOLCHAIN_PATH ?= $(PROJ_DIR)vcpkg/scripts/buildsystems/vcpkg.cmake
+GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
+# only the goals that configure cmake need the toolchain; the CI's checkout-phase goals run before
+# any vcpkg exists (duckdb-acl's lesson, its Makefile says why the list names the goals that NEED it)
+OTEL_VCPKG_GOALS := all release debug reldebug relassert wasm_mvp wasm_eh wasm_threads
+ifeq ($(wildcard $(VCPKG_TOOLCHAIN_PATH)),)
+ifneq ($(filter $(OTEL_VCPKG_GOALS),$(GOALS)),)
+$(error this build needs vcpkg: run 'make vcpkg-setup' first, or set VCPKG_TOOLCHAIN_PATH)
+endif
+endif
 
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
@@ -14,7 +27,8 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 # --- Standalone C++ tests (the duckdb-acl / mssql-extension style) -----------------------------
 # Each test/cpp/test_*.cpp is its own program, built from the already-compiled release tree and
 # linked against the shared libduckdb. Same generator as the main build: GEN=ninja make test-cpp.
-TEST_CPP_SOURCES := $(wildcard test/cpp/test_*.cpp)
+# the transport's test links the SDK and is a CMake target (below), not a Makefile-compiled one
+TEST_CPP_SOURCES := $(filter-out test/cpp/test_acl_otel_otlp.cpp,$(wildcard test/cpp/test_*.cpp))
 TEST_CPP_FLAGS := -std=c++17 -O2 -DNDEBUG -pthread
 TEST_CPP_DIR := build/test
 TEST_CPP_BINS := $(patsubst test/cpp/%.cpp,$(TEST_CPP_DIR)/%,$(TEST_CPP_SOURCES))
@@ -43,9 +57,20 @@ test-cpp:
 		echo "test-cpp: $(TEST_CPP_DUCKDB_LIB) missing - run 'GEN=ninja make' first" >&2; exit 1; }
 	@$(MAKE) --no-print-directory test-cpp-run
 
+# the transport's test is a CMake target (it links the SDK): built here on demand, run with the rest
+TEST_CPP_CMAKE_BINS := build/release/extension/acl_otel/acl_otel_test_otlp
+
 test-cpp-run: $(TEST_CPP_BINS)
 	@test -n "$(TEST_CPP_BINS)" || { echo "test-cpp: no test/cpp/test_*.cpp sources found" >&2; exit 1; }
-	@fail=0; for b in $(TEST_CPP_BINS); do \
+	@cmake --build build/release --target acl_otel_test_otlp > build/test/cmake-tests.log 2>&1 || \
+		{ cat build/test/cmake-tests.log; exit 1; }
+	@fail=0; for b in $(TEST_CPP_BINS) $(TEST_CPP_CMAKE_BINS); do \
 		if "$$b" > "$$b.log" 2>&1; then echo "  PASS $$(basename $$b)"; \
 		else echo "  FAIL $$(basename $$b)"; cat "$$b.log"; fail=1; fi; \
 	done; [ $$fail = 0 ]
+
+# Bootstrap a local vcpkg checkout (the standard duckdb-extension dependency flow)
+.PHONY: vcpkg-setup
+vcpkg-setup:
+	@test -d vcpkg || git clone https://github.com/microsoft/vcpkg.git vcpkg
+	@test -x vcpkg/vcpkg || vcpkg/bootstrap-vcpkg.sh -disableMetrics

@@ -1,7 +1,5 @@
 # name: test/sql/acl_otel.test
-# description: spec 001 - the extension loads on its own, answers its version and status, takes its
-#   level rules as a JSON document refused at the SET when malformed, refuses a session-scoped SET,
-#   and detaches / re-attaches idempotently.
+# description: spec 001 - the extension loads on its own, answers version and status, takes its level rules as JSON refused at the SET when malformed, refuses a session-scoped SET, detaches and re-attaches idempotently
 # group: [sql]
 
 # a DONT_LINK loadable is invisible to `require`: loaded by build path instead
