@@ -245,6 +245,32 @@ int main() {
 		CheckTick(receiver.capture, "grpc");
 	}
 	{
+		// spec 006 (R7.2): the extension's own numbers ride along, named apart from the node's
+		HttpReceiver receiver;
+		acl::AuditHooks hooks;
+		Seed(hooks);
+		acl_otel::OtelMetrics metrics(15, acl_otel::DefaultHistograms(),
+		                              acl_otel::MakeOtlpMetricsExporter(Config(
+		                                  "http://127.0.0.1:" + std::to_string(receiver.port), "http/protobuf")));
+		metrics.SetSelfMetrics([]() {
+			vector<acl_otel::MetricPoint> mine;
+			mine.push_back(acl_otel::MetricPoint {"acl_otel.received", {}, 12, true, "1", "handed"});
+			mine.push_back(acl_otel::MetricPoint {"acl_otel.dropped", {{"why", "queue"}}, 3, true, "1", "lost"});
+			mine.push_back(acl_otel::MetricPoint {"acl_otel.healthy", {}, 0, false, "1", "0 while losing"});
+			return mine;
+		});
+		Check(metrics.TickNow(hooks), "the tick with our own numbers was exported");
+		Check(receiver.capture.At("acl_otel.received").by_labels[""] == 12 &&
+		          receiver.capture.At("acl_otel.received").kind == "sum",
+		      "acl_otel.received arrives as a counter");
+		Check(receiver.capture.At("acl_otel.dropped").by_labels["why=queue"] == 3,
+		      "acl_otel.dropped carries its reason");
+		Check(receiver.capture.At("acl_otel.healthy").kind == "gauge" &&
+		          receiver.capture.At("acl_otel.healthy").by_labels[""] == 0,
+		      "acl_otel.healthy arrives as a gauge");
+		Check(receiver.capture.Has("acl.decisions"), "...beside the base's own, which are not renamed");
+	}
+	{
 		// the pair can be turned off (R2.5 is for a bridge that needs it, not for everybody)
 		HttpReceiver receiver;
 		acl::AuditHooks hooks;

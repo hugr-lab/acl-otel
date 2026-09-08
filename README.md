@@ -34,8 +34,14 @@ in the base; what is built so far is in [`specs/`](specs/README.md).
   refusals, sessions, doors, policy and keys events never are. Sampling is deterministic in the
   event's sequence number, so two nodes with the same setting keep the same statements, and the
   counters and histograms still see everything.
-- Not yet: per-connection logging (004), the self-metrics and `strict` mode (006), rules kept in
-  the policy catalog (007).
+- **Spec 006 (its own numbers, and health)**: every tick also carries `acl_otel.received`,
+  `.exported`, `.dropped{why}`, `.export_errors`, `.queue_fill`, `.attached` and `.healthy` - named
+  apart from the node's own. `acl_otel_strict` gives the last one teeth: a node losing audit events,
+  or not attached to the base's registry at all, reports `healthy = 0` for
+  `acl_otel_health_window` seconds after the last loss, and `acl_otel_healthy()` answers the same
+  for a readiness probe. Strict never refuses a statement - the base emits after the decision, so
+  there is nothing left to refuse.
+- Not yet: per-connection logging (004), rules kept in the policy catalog (007).
 
 ```sql
 LOAD acl;
@@ -65,6 +71,7 @@ SELECT acl_otel_flush();      -- export what is queued now and wait for it
 | `acl_otel_max_series` / `_series_allowlist` | `1000` / `''` | distinct label values before the `other` fold, and the values kept exact regardless |
 | `acl_otel_claim_attributes` | `''` | the claims whose values may be exported, as `acl.claim.<name>`; at most 16 |
 | `acl_otel_sample_allowed` | `1` | the ratio of ALLOWED statements exported, or a JSON object per role; a refusal is never sampled |
+| `acl_otel_strict` / `_health_window` | `false` / `60` | report `acl_otel.healthy = 0` while events are being lost, and for how long after the last one |
 
 A setting at its default means the standard environment decides, so a container configured the
 OpenTelemetry way needs no SET; a setting that is set wins over its variable.

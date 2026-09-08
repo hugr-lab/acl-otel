@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <set>
@@ -167,6 +168,9 @@ public:
 	void SetSeries(const vector<string> &names, const string &claim, idx_t cap,
 	               const std::map<string, vector<string>> &allowlists);
 	void SetExporter(shared_ptr<MetricsExporter> exporter);
+	//! spec 006 (R7.2): what the extension reports about itself, asked for at every tick. The state
+	//! sets this; a null reader means no self-metrics (a test, or a scrape with no owner).
+	void SetSelfMetrics(std::function<vector<MetricPoint>()> reader);
 	//! R2.5: beside every histogram, the `_sum` / `_count` pair a bridge that cannot ingest an OTLP
 	//! histogram still understands. On by default - the Azure bridge is why this exists.
 	void SetHistogramSums(bool on);
@@ -195,6 +199,7 @@ private:
 	vector<unique_ptr<CappedSeries>> series;
 	string claim_dimension;
 	bool histogram_sums = true;
+	std::function<vector<MetricPoint>()> self_metrics; // spec 006
 	shared_ptr<MetricsExporter> exporter;
 	shared_ptr<acl::AuditHooks> hooks;
 	std::thread worker;

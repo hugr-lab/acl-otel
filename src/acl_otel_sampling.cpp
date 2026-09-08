@@ -136,5 +136,24 @@ bool Sampler::Keep(const acl::AuditEvent &event) const {
 	return (mixed % 1000000ULL) < static_cast<uint64_t>(ratio * 1000000.0);
 }
 
+//! Spec 006 (R7.3). The first judgement of a node only takes a baseline: a count that was already
+//! high when we started saying so is not news, and an orchestrator draining every node that ever
+//! dropped an event since boot is not the signal anybody asked for.
+bool Health::Losing(int64_t drops, int64_t now_us, int64_t window_s) {
+	if (seen < 0) {
+		seen = drops;
+		return false;
+	}
+	if (drops > seen) {
+		seen = drops;
+		since_us = now_us;
+	}
+	if (since_us == 0) {
+		return false;
+	}
+	auto window = MaxValue<int64_t>(window_s, 0) * 1000000;
+	return now_us - since_us < window;
+}
+
 } // namespace acl_otel
 } // namespace duckdb

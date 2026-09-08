@@ -66,6 +66,11 @@ void AclOtelMetricsFlushFunc(DataChunk &args, ExpressionState &state, Vector &re
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->FlushMetrics()), count_t(args.size()));
 }
 
+void AclOtelHealthyFunc(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &db = InstanceOf(state);
+	result.Reference(Value::BOOLEAN(OtelState::Of(db)->Healthy(db)), count_t(args.size()));
+}
+
 void AclOtelStopFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &db = InstanceOf(state);
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->Stop()), count_t(args.size()));
@@ -205,6 +210,20 @@ void LoadInternal(ExtensionLoader &loader) {
 	                          LogicalType::VARCHAR, Value("duckdb-acl"), TransportSet<TransportSetting::SERVICE_NAME>,
 	                          SetScope::GLOBAL);
 
+	// spec 006 (R7.3): strict does not refuse a statement - the base emits after the decision, and
+	// nothing can be refused afterwards. It makes `acl_otel.healthy` drop to 0 while events are
+	// being lost, which is the signal a deployment drains a node on.
+	config.AddExtensionOption(
+	    "acl_otel_strict",
+	    "acl_otel: report acl_otel.healthy = 0 while this node is losing audit events or is not "
+	    "attached to the base's registry; it never refuses a statement (R7.3)",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(false),
+	    [](ClientContext &, SetScope scope, Value &) { RequireGlobal("acl_otel_strict", scope); }, SetScope::GLOBAL);
+	config.AddExtensionOption(
+	    "acl_otel_health_window", "acl_otel: seconds a node stays unhealthy after the last lost event (strict mode)",
+	    LogicalType::BIGINT, Value::BIGINT(60),
+	    [](ClientContext &, SetScope scope, Value &) { RequireGlobal("acl_otel_health_window", scope); },
+	    SetScope::GLOBAL);
 	// spec 003: the metrics side. The endpoint, protocol, TLS and headers are the logs' (spec 002);
 	// what is here is the scrape's own shape - what it exports, how often, and how bounded.
 	config.AddExtensionOption(
@@ -275,6 +294,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	register_scalar("acl_otel_flush", LogicalType::BOOLEAN, AclOtelFlushFunc);
 	// spec 003: export one metrics tick now, without waiting for the timer
 	register_scalar("acl_otel_metrics_flush", LogicalType::BOOLEAN, AclOtelMetricsFlushFunc);
+	// spec 006: what a readiness probe reads, without parsing the status
+	register_scalar("acl_otel_healthy", LogicalType::BOOLEAN, AclOtelHealthyFunc);
 
 	// R8.1: attached at load, before or after acl - the registry is shared through the cache
 	OtelState::Of(db)->Start(db);
