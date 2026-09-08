@@ -180,7 +180,7 @@ CappedSeries::CappedSeries(string name_p, string label_p, idx_t cap_p)
     : name(std::move(name_p)), label(std::move(label_p)), cap(cap_p == 0 ? 1 : cap_p) {
 }
 
-void CappedSeries::SetAllowlist(vector<string> allowed) {
+void CappedSeries::SetAllowlist(const vector<string> &allowed) {
 	std::lock_guard<std::mutex> guard(lock);
 	allowlist.clear();
 	for (auto &value : allowed) {

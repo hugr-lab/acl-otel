@@ -216,9 +216,9 @@ void LoadInternal(ExtensionLoader &loader) {
 	    },
 	    SetScope::GLOBAL);
 	// the opt-in series (R2.3): each takes effect at once, on the running scrape
-	auto series_setting = [&](const char *name, const char *description, const LogicalType &type, Value fallback,
+	auto series_setting = [&](const char *name, const char *description, const LogicalType &type, const Value &fallback,
 	                          set_option_callback_t callback) {
-		config.AddExtensionOption(name, description, type, std::move(fallback), callback, SetScope::GLOBAL);
+		config.AddExtensionOption(name, description, type, fallback, callback, SetScope::GLOBAL);
 	};
 	series_setting("acl_otel_series",
 	               "acl_otel: the high-cardinality series to export, by name and comma separated - "

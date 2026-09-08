@@ -135,13 +135,13 @@ bool OtlpMetricsExporter::Export(const MetricsSnapshot &snapshot, string &error)
 			sdkmetrics::SumPointData sum;
 			sum.value_ = point.value;
 			sum.is_monotonic_ = true;
-			entry.point_data = std::move(sum);
+			entry.point_data = sum; // a trivially copyable SDK point: a move would be a copy anyway
 		} else {
 			sdkmetrics::LastValuePointData value;
 			value.value_ = point.value;
 			value.is_lastvalue_valid_ = true;
 			value.sample_ts_ = Stamp(snapshot.now_us);
-			entry.point_data = std::move(value);
+			entry.point_data = value;
 		}
 		metrics[found->second].point_data_attr_.push_back(std::move(entry));
 	}

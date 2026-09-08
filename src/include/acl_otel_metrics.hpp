@@ -70,7 +70,7 @@ public:
 
 	void Add(const string &value, const Labels &extra);
 	//! the values the operator wants exact whatever the order of arrival
-	void SetAllowlist(vector<string> allowed);
+	void SetAllowlist(const vector<string> &allowed);
 	void SetCap(idx_t cap);
 	//! label tuples and their counts, for the exporter
 	vector<std::pair<Labels, int64_t>> Points() const;
