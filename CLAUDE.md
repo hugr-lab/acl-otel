@@ -102,6 +102,16 @@ find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dr
   the metrics accumulators have seen the event, so a rate stays exact while the records thin.
 - **The extension never writes to the policy catalog and never calls a policy-changing `acl_*`
   function** (R9.3).
+- **A setting is read twice, or it is read wrong**: in its SET callback (so a change applies to what
+  is running) *and* wherever the thing it configures is built (`OtelState::Start`), or an operator
+  who sets it while the scrape is stopped watches it come back to the default. Spec 003 shipped that
+  bug; the tests now turn a setting off with the scrape stopped and start it again.
+- **Nothing of ours runs DDL unasked.** Spec 007 reads a table a fleet writes; the table is created
+  by `acl_otel_create_rules_table()`, which a person runs, never by a background thread on somebody
+  else's database. A background thread may read; writing is a statement with a human behind it.
+- **A `Connection` costs 24 MB in the artifact.** Running SQL pulls duckdb's query path into the
+  loadable (28 MB -> 52 MB; the base's own `acl` is of that order for the same reason). Worth it for
+  spec 007's pull; worth thinking about before the next feature reaches for a query.
 - Process: a spec per feature (`specs/NNN-slug/spec.md` from `specs/TEMPLATE.md`), tests with it,
   a self-review before "done" (adversarial passes over the diff), CI green before merge.
 
