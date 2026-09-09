@@ -111,8 +111,12 @@ SELECT acl_otel_metrics_flush();
 ----
 false
 
+# the reason is OURS - the SDK's own words follow it and are the transport's, which on Windows is a
+# different HTTP client saying the same thing in other words: asserting on those was a test that
+# only passed where curl phrases a refused connection the way Linux and macOS do
 query II
-SELECT s LIKE '%"export_errors":0,"last_error":null,"series"%', s LIKE '%127.0.0.1 port 1%'
+SELECT s LIKE '%"export_errors":0,"last_error":null,"series"%',
+       s LIKE '%"last_error":"the export failed (otlp/http -> http://127.0.0.1:1/v1/metrics)%'
 FROM (SELECT acl_otel_status() AS s);
 ----
 false	true

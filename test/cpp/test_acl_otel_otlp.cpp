@@ -309,8 +309,8 @@ int main() {
 		bool exported = exporter.Export(SampleBatch(), error);
 		Check(!exported && error.find("the export failed") == 0,
 		      "http: a port nobody listens on fails with a reason (" + error + ")");
-		Check(error.find("127.0.0.1") != std::string::npos || error.find("onnect") != std::string::npos,
-		      "http: the SDK's own reason is carried into the error (" + error + ")");
+		Check(error.find(exporter.Describe()) != std::string::npos,
+		      "http: the error names the transport that failed (" + error + ")");
 	}
 	{
 		// the same over grpc: a channel to a port nobody listens on fails within the timeout
