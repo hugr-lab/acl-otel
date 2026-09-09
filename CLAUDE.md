@@ -33,7 +33,10 @@ specs here.
   merged-manifest flow duckdb-acl uses for Arrow/gRPC, no vendoring (§5 of the contract).
   `make vcpkg-setup` once, or `VCPKG_TOOLCHAIN_PATH` at the base's checkout (same ports, its binary
   cache). The Makefile's guard names the goals that NEED the toolchain, never the exceptions.
-- **Platforms**: where the base ships (Linux, macOS, Windows); **no wasm** (an exporter is sockets).
+- **Platforms**: linux amd64/arm64, osx arm64, windows amd64 and MinGW. **No wasm** (an exporter is
+  sockets) and **no osx_amd64** (the owner's decision, 2026-09-09: nobody deploys a server on an
+  Intel Mac, and this extension exists for servers).
+  The base still builds osx_amd64, so that is a deliberate asymmetry, not drift.
 - **License**: BUSL 1.1 (the parameters in `LICENSE` are the licensor's to revise before release).
 
 ## Project structure
