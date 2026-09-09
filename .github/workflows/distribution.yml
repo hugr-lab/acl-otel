@@ -27,8 +27,12 @@ jobs:
       extension_name: acl_otel
       duckdb_version: v2.0-cyanoptera
       ci_tools_version: main
-      # wasm is out: the extension ships where the base does, and an exporter is sockets
-      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads'
+      # wasm is out: an exporter is sockets. osx_amd64 is out by the owner's decision (2026-09-09):
+      # nobody runs a server on an Intel Mac, and this extension exists for servers - it costs
+      # runner minutes and cache space without changing a run's wall clock, which MinGW sets. The
+      # base still builds osx_amd64, so on an Intel Mac `acl` loads and this does not: a deliberate
+      # asymmetry, and the reason it is written down here.
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;osx_amd64'
       # The OpenTelemetry SDK pulls grpc, protobuf, abseil and curl, built for every triplet in the
       # matrix - hours from cold. duckdb-acl keeps a vcpkg binary cache on Cloudflare R2 for exactly
       # this (its docs/vcpkg-cache-r2.md), and the same bucket serves us: vcpkg keys packages by ABI
