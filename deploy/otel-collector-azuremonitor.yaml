@@ -11,6 +11,7 @@
 #     otel/opentelemetry-collector-contrib:0.116.0
 #
 # then on the node: SET GLOBAL acl_otel_endpoint = 'http://<collector>:4318';  (or :4317 + grpc)
+# one endpoint carries both signals: /v1/logs and /v1/metrics under the same host.
 #
 # The connection string is a secret: it stays in the Collector's environment, never in a duckdb
 # setting (R9.2). A Collector that fronts the public network should terminate TLS on the receivers
@@ -43,6 +44,14 @@ exporters:
 service:
   pipelines:
     logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [azuremonitor, debug]
+    # spec 003 and 006 send metrics down the same endpoint: the node's counters and gauges, our
+    # histograms, and the extension's own acl_otel.* numbers - including acl_otel.healthy, which is
+    # the one an orchestrator alerts on. Without this pipeline the Collector accepts them and drops
+    # them silently, which is the worst of the three possible behaviours.
+    metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [azuremonitor, debug]
