@@ -39,6 +39,7 @@ specs are the shareable distillation of that work.
 | [001](001-architecture/spec.md) | the architecture - one header, one registry, and the wiring that proves it | implemented |
 | [002](002-otlp-logs/spec.md) | OTLP logs - every audit event one OpenTelemetry log record, over HTTP/protobuf or gRPC | implemented |
 | [003](003-otlp-metrics/spec.md) | OTLP metrics - the base's counters and gauges, our histograms, the opt-in series bounded | implemented |
+| [004](004-per-connection-logging/spec.md) | logging on a connection - the level of a session, and where it came from | **draft: one decision open** |
 | [005](005-enrichment-sampling/spec.md) | enrichment and sampling - the one claim an operator asked for, and the volume they can afford | implemented |
 | [006](006-self-metrics-health/spec.md) | the extension's own numbers, and a gauge an orchestrator can act on | implemented |
 | [007](007-central-rules/spec.md) | the level rules a fleet writes once, in a table every node reads | implemented |
