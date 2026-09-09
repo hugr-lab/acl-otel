@@ -84,9 +84,10 @@ true
 
 # the sink's own numbers, not the scrape's: `queue_fill` is where the log side of the status starts
 # (spec 003 put a `metrics` object with fields of the same names in front of it)
+# the transport's own words differ per platform (a different HTTP client on Windows); ours do not
 query III
 SELECT s LIKE '%"queue_fill"%"export_errors":0%', s LIKE '%"queue_fill"%"last_error":null%',
-       s LIKE '%127.0.0.1 port 1%'
+       s LIKE '%"last_error":"the export failed (otlp/http -> http://127.0.0.1:1/v1/logs)%'
 FROM (SELECT acl_otel_status() AS s);
 ----
 false	false	true
