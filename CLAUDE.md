@@ -115,13 +115,33 @@ find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dr
 - Process: a spec per feature (`specs/NNN-slug/spec.md` from `specs/TEMPLATE.md`), tests with it,
   a self-review before "done" (adversarial passes over the diff), CI green before merge.
 
-## What the owner still has to switch on
+## The vcpkg binary cache (on since 2026-09-09)
 
-The distribution matrix builds the OpenTelemetry SDK (grpc, protobuf, abseil, curl) for nine
-triplets — hours from cold. `distribution.yml` already passes a vcpkg binary cache through; it only
-needs the credentials: copy the repository variable `VCPKG_BINARY_SOURCES` and the four
-`VCPKG_CACHING_AWS_*` secrets from `duckdb-acl` (its `docs/vcpkg-cache-r2.md` explains the bucket).
-Until then the runs fall back to duckdb's public read-only cache and are merely slow.
+The distribution matrix builds the OpenTelemetry SDK (grpc, protobuf, abseil, curl) for six
+triplets, which is hours from cold: a full run without the cache measured **2h55m–3h40m**, the
+MinGW job alone 84–153 minutes. So this repository now carries the same cache duckdb-acl uses —
+the repository variable `VCPKG_BINARY_SOURCES` and four `VCPKG_CACHING_AWS_*` secrets, pointing at
+**the same bucket** (`duckdb-acl-vcpkg-cache`; its `docs/vcpkg-cache-r2.md` explains it).
+
+Sharing one bucket is deliberate: vcpkg addresses every archive by an ABI hash (port, version,
+features, triplet, toolchain, dependency hashes), so two repositories either produce the same hash
+and legitimately share the artifact or produce different ones and coexist. Both take vcpkg from
+duckdb's pin through extension-ci-tools — the same commit, verified — so the expensive shared ports
+(grpc, protobuf, abseil, curl, openssl) really are reused; only `opentelemetry-cpp` is ours alone.
+
+No lifecycle rule for now, on purpose: R2 can only expire by age since creation and vcpkg never
+touches an object on a hit, so any window eventually evicts a hot archive and forces a rebuild.
+While two duckdb lines are alive both halves of the cache are hot. The bucket was 3.96 GB against
+R2's 10 GB free tier when this was written; the moment to clean up is when a line is retired - one
+deliberate purge of its archives, not a rule.
+
+## The one decision still open
+
+Spec 004 (per-connection logging): the extension cannot see the base's sessions, because the
+contract carries events, counters and gauges and a session list is none of the three. The spec draft
+holds the three ways out - a sessions reader in `AuditHooks` plus a `CONTRACT_VERSION` bump
+(recommended), a table function that opens a second connection, or nothing - and is waiting for the
+owner rather than for code.
 
 ## Reference repos (local)
 
