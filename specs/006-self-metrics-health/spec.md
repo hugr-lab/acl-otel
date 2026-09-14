@@ -35,10 +35,20 @@ On every tick of spec 003's scrape, beside the base's numbers:
 | `acl_otel.export_errors` | counter | batches that failed |
 | `acl_otel.queue_fill` | gauge | events waiting right now |
 | `acl_otel.metrics_ticks` / `.metrics_errors` | counter | the scrape's own |
+| `acl_otel.attached` | gauge | 0/1: on the base's registry or not |
 | `acl_otel.healthy` | gauge | 0/1, below |
 
 They are ours, so they are named `acl_otel.` and never `acl.` - a dashboard must be able to tell
 the node's numbers from its reporter's.
+
+**A gauge's unit is never `"1"`** (found on a Grafana bench, 2026-09-14, and fixed on both sides the
+same day): the OpenTelemetry-to-Prometheus convention turns a gauge whose unit is `1` into
+`<name>_ratio`, so `acl_otel.healthy` arrived as `acl_otel_healthy_ratio` and `acl_otel.attached` as
+`acl_otel_attached_ratio` - neither is a ratio, and a dashboard built on those names reads wrong.
+`queue_fill` carries the UCUM annotation `{event}` (dimensionless, no suffix) and the two flags carry
+no unit at all. The counters above keep `"1"`: the same convention gives a monotonic sum `_total`.
+The base's own gauges were fixed in its spec 069 and arrive here already correct - we pass a unit
+through, we never invent one.
 
 ### `healthy` (R7.2, R7.3)
 

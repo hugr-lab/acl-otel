@@ -198,7 +198,8 @@ int main() {
 		hooks.Counters().Add("acl.decisions", {{"verdict", "allowed"}});
 		hooks.Counters().Add("acl.decisions", {{"verdict", "allowed"}});
 		hooks.Counters().Add("acl.denials", {{"reason_code", "capability"}});
-		hooks.Gauges().Register("acl.sessions.live", {{"door", "flight"}}, "1", "sessions", [] { return int64_t(7); });
+		hooks.Gauges().Register("acl.sessions.live", {{"door", "flight"}}, "{session}", "sessions",
+		                        [] { return int64_t(7); });
 		auto recording = make_shared_ptr<RecordingMetrics>();
 		acl_otel::OtelMetrics metrics(15, acl_otel::DefaultHistograms(), recording);
 		metrics.SetSeries({"by_role"}, "", 100, {});
