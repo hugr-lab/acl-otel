@@ -8,7 +8,10 @@
 #   docker run --rm -p 4317:4317 -p 4318:4318 \
 #     -e APPLICATIONINSIGHTS_CONNECTION_STRING="InstrumentationKey=...;IngestionEndpoint=..." \
 #     -v "$PWD/deploy/otel-collector-azuremonitor.yaml:/etc/otelcol-contrib/config.yaml" \
-#     otel/opentelemetry-collector-contrib:0.116.0
+#     otel/opentelemetry-collector-contrib:0.148.0
+#
+# (0.116.0 is tagged linux/arm64 but its binary does not exec there - checked on an Apple Silicon
+# machine, 2026-09-14. Any recent contrib image works; this one was.)
 #
 # then on the node: SET GLOBAL acl_otel_endpoint = 'http://<collector>:4318';  (or :4317 + grpc)
 # one endpoint carries both signals: /v1/logs and /v1/metrics under the same host.

@@ -1,0 +1,24 @@
+# Локальный стенд: узел -> Collector -> Loki (логи) + Prometheus (метрики) -> Grafana.
+receivers:
+  otlp:
+    protocols:
+      grpc: {endpoint: 0.0.0.0:4317}
+      http: {endpoint: 0.0.0.0:4318}
+processors:
+  batch: {timeout: 2s}
+exporters:
+  otlphttp/loki:
+    logs_endpoint: http://loki:3100/otlp/v1/logs
+  otlphttp/prom:
+    metrics_endpoint: http://prometheus:9090/api/v1/otlp/v1/metrics
+  debug: {verbosity: basic}
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/loki, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/prom, debug]
