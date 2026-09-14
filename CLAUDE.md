@@ -95,14 +95,20 @@ proves two loadables share a registry has proven nothing.
   means do not attach (`attach_error` in the status, `acl_otel_start()` false). A bump of the base's
   `CONTRACT_VERSION` is a submodule bump here the same day. `test_acl_otel_contract` (needs
   `ACL_EXT`) is the two-loadable round trip the base cannot stage itself.
-- **A red beside-acl step usually means the BASE moved.** CI fetches duckdb-acl's latest green
-  `main` artifact, which may be ahead of the `duckdb-acl/` submodule pinned here: when the base
-  bumps `CONTRACT_VERSION`, our extension refuses to attach to its registry and the step goes red
-  until this repo bumps the submodule. That is the early warning working, not a flake - and the
-  order to merge in is base first, then here, the same day.
+- **A red beside-acl step usually means the BASE moved.** CI fetches a green `main` artifact of
+  duckdb-acl, which may be ahead of the `duckdb-acl/` submodule pinned here: when the base bumps
+  `CONTRACT_VERSION`, our extension refuses to attach to its registry and the step goes red until
+  this repo bumps the submodule. That is the early warning working, not a flake - and the order to
+  merge in is base first, then here, the same day.
+- **`fetch_base.sh` takes the artifact built against the duckdb WE pin**, not simply the newest
+  green one: an extension loads only into the duckdb it was built against, and the base publishes
+  its `duckdb` pin per commit, so each candidate run is checked before it is downloaded. The run of
+  the commit our `duckdb-acl` submodule names is tried first. When no green run matches, the failure
+  names both pins - the usual cause is a base bump whose own CI has not finished yet, and the cure
+  is to re-run the job once it is green. A `LOAD` refusing the base's artifact for "DuckDB version
+  ..." means that check was bypassed, and the answer is never a metadata-mismatch override.
 - **The beside-acl test is the proof, and CI runs it**: two loadables on one instance, the base's
-  real artifact (downloaded from duckdb-acl's latest green `main` run). A change that passes only
-  the alone-suite is not done.
+  real artifact. A change that passes only the alone-suite is not done.
 - **Never the keys, the rows, the statement text, a claim value not allowlisted** (C5, R5.1): the
   event is safe by the base's construction; the exporter must keep it so. Two settings are the only
   doors a claim value leaves by - `acl_otel_claim_attributes` (logs) and `acl_otel_claim_dimension`
