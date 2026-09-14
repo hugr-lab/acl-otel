@@ -237,8 +237,12 @@ vector<MetricPoint> OtelState::SelfMetrics(DatabaseInstance &db) {
 	auto counter = [&](const char *name, int64_t value, const Labels &labels, const char *description) {
 		points.push_back(MetricPoint {name, labels, value, true, "1", description});
 	};
-	auto gauge = [&](const char *name, int64_t value, const char *description) {
-		points.push_back(MetricPoint {name, {}, value, false, "1", description});
+	// A gauge's unit is never "1": the OpenTelemetry-to-Prometheus convention turns that into
+	// `<name>_ratio`, and none of these is a ratio (the base learned the same on spec 069). A UCUM
+	// annotation is dimensionless and adds no suffix; an empty unit is the answer where the number is
+	// a flag. The counters above keep "1" - a monotonic sum gets `_total` from the same convention.
+	auto gauge = [&](const char *name, int64_t value, const char *unit, const char *description) {
+		points.push_back(MetricPoint {name, {}, value, false, unit, description});
 	};
 	if (current) {
 		auto &stats = current->stats;
@@ -251,14 +255,15 @@ vector<MetricPoint> OtelState::SelfMetrics(DatabaseInstance &db) {
 		counter("acl_otel.dropped", stats.sampled.load(), {{"why", "sampled"}},
 		        "audit events not exported by policy (spec 005), counted apart from a loss");
 		counter("acl_otel.export_errors", stats.exported_batches_failed.load(), {}, "batches a backend refused");
-		gauge("acl_otel.queue_fill", NumericCast<int64_t>(current->QueueFill()), "events waiting to be exported");
+		gauge("acl_otel.queue_fill", NumericCast<int64_t>(current->QueueFill()), "{event}",
+		      "events waiting to be exported");
 	}
 	if (scrape) {
 		counter("acl_otel.metrics_ticks", scrape->stats.ticks.load(), {}, "metric scrapes attempted");
 		counter("acl_otel.metrics_errors", scrape->stats.export_errors.load(), {}, "metric scrapes a backend refused");
 	}
-	gauge("acl_otel.attached", is_attached ? 1 : 0, "1 while this extension is on the base's audit registry");
-	gauge("acl_otel.healthy", Healthy(db) ? 1 : 0,
+	gauge("acl_otel.attached", is_attached ? 1 : 0, "", "1 while this extension is on the base's audit registry");
+	gauge("acl_otel.healthy", Healthy(db) ? 1 : 0, "",
 	      "0 while acl_otel_strict is on and this node is losing events, or is not attached (R7.3)");
 	return points;
 }

@@ -180,7 +180,9 @@ void Seed(acl::AuditHooks &hooks) {
 	hooks.Counters().Add("acl.decisions", {{"verdict", "allowed"}});
 	hooks.Counters().Add("acl.decisions", {{"verdict", "allowed"}});
 	hooks.Counters().Add("acl.decisions", {{"verdict", "denied"}});
-	hooks.Gauges().Register("acl.sessions.live", {{"door", "flight"}}, "1", "sessions alive right now",
+	// the unit is the one the base registers since its spec-069 fix: a gauge's unit is never "1",
+	// which the OTel-to-Prometheus convention would turn into `acl_sessions_live_ratio`
+	hooks.Gauges().Register("acl.sessions.live", {{"door", "flight"}}, "{session}", "sessions alive right now",
 	                        [] { return int64_t(3); });
 }
 
@@ -193,8 +195,8 @@ void CheckTick(Capture &capture, const string &transport) {
 	Check(decisions.by_labels["verdict=allowed"] == 2 && decisions.by_labels["verdict=denied"] == 1,
 	      transport + ": ...with the base's own numbers, per attribute tuple");
 	auto sessions = capture.At("acl.sessions.live");
-	Check(sessions.kind == "gauge" && sessions.by_labels["door=flight"] == 3 && sessions.unit == "1",
-	      transport + ": a base gauge is a gauge, read at snapshot time, with its unit");
+	Check(sessions.kind == "gauge" && sessions.by_labels["door=flight"] == 3 && sessions.unit == "{session}",
+	      transport + ": a base gauge is a gauge, read at snapshot time, with the unit the base gave it");
 	auto rewrite = capture.At("acl.rewrite.duration");
 	Check(rewrite.kind == "histogram" && rewrite.cumulative, transport + ": our histogram is a cumulative histogram");
 	Check(rewrite.histogram_shape["kind=statement,verdict=allowed"] == "2/300/9/10",
@@ -256,7 +258,8 @@ int main() {
 			vector<acl_otel::MetricPoint> mine;
 			mine.push_back(acl_otel::MetricPoint {"acl_otel.received", {}, 12, true, "1", "handed"});
 			mine.push_back(acl_otel::MetricPoint {"acl_otel.dropped", {{"why", "queue"}}, 3, true, "1", "lost"});
-			mine.push_back(acl_otel::MetricPoint {"acl_otel.healthy", {}, 0, false, "1", "0 while losing"});
+			// empty, like the real one: a flag is not a ratio, and an empty unit must survive the SDK
+			mine.push_back(acl_otel::MetricPoint {"acl_otel.healthy", {}, 0, false, "", "0 while losing"});
 			return mine;
 		});
 		Check(metrics.TickNow(hooks), "the tick with our own numbers was exported");
@@ -268,6 +271,8 @@ int main() {
 		Check(receiver.capture.At("acl_otel.healthy").kind == "gauge" &&
 		          receiver.capture.At("acl_otel.healthy").by_labels[""] == 0,
 		      "acl_otel.healthy arrives as a gauge");
+		Check(receiver.capture.At("acl_otel.healthy").unit.empty(),
+		      "...with no unit, so Prometheus adds no suffix to its name");
 		Check(receiver.capture.Has("acl.decisions"), "...beside the base's own, which are not renamed");
 	}
 	{
