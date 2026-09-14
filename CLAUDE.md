@@ -65,10 +65,16 @@ make vcpkg-setup                                # once (or VCPKG_TOOLCHAIN_PATH=
 GEN=ninja make                                  # release build of duckdb + the extension
 build/release/test/unittest 'test/sql/*'        # the whole suite (the beside-acl file needs ACL_EXT)
 ACL_EXT=../duckdb-acl/build/release/extension/acl/acl.duckdb_extension build/release/test/unittest test/sql/acl_otel_beside_acl.test
-GEN=ninja make test-cpp                         # standalone C++ tests
+GEN=ninja make test-cpp                         # C++ tests (two of them CMake targets that link the SDK)
 scripts/ci/smoke_load.sh                        # the built artifact loads out of the tree
+make tidy-ci                                    # clang-tidy, and a finding fails - CI runs this
 find src test/cpp \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format --dry-run --Werror
+make -C duckdb format-check T="--workdir $PWD --directories src test"   # what the community pipeline runs
 ```
+
+**Before saying a change is done**: all of the above, with `ACL_EXT` set so the beside-acl file and
+`test_acl_otel_contract` actually run rather than skip. A suite that skipped the one test that
+proves two loadables share a registry has proven nothing.
 
 ## Rules that hold here
 
