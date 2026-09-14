@@ -72,5 +72,5 @@ test -f "$ext" || {
 	echo "  fix is a submodule bump here, never a metadata-mismatch override." >&2
 	exit 1
 }
-echo "fetch_base: $ext ($(wc -c < "$ext") bytes)"
+echo "fetch_base: $ext ($(wc -c < "$ext" | tr -d " ") bytes)"
 echo "$ext"
