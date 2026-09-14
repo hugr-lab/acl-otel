@@ -82,6 +82,7 @@ safety envelope (R10, C3, C6) and must be right before anything is exported.
 | R5 enrichment (claim allowlist), R6.1 sampling | 005 |
 | R7.2–R7.3 self-metrics, `acl_otel.healthy`, strict mode | 006 |
 | §5 level rules in the policy catalog (`acl_otel.level_rules`), R3.1's central reload | 007 |
+| the decision as a span under the caller's trace - what the base listed as a non-requirement, and the half of it that is measurable | 008 (draft) |
 | R9.2 secrets for OTLP headers | with 002 |
 
 ## Enforcement & security
