@@ -154,35 +154,6 @@ string JsonQuote(const string &value) {
 	return out + "\"";
 }
 
-bool HexByte(const char *at, uint8_t &out) {
-	uint8_t value = 0;
-	for (int i = 0; i < 2; i++) {
-		char c = at[i];
-		uint8_t nibble;
-		if (c >= '0' && c <= '9') {
-			nibble = NumericCast<uint8_t>(c - '0');
-		} else if (c >= 'a' && c <= 'f') {
-			nibble = NumericCast<uint8_t>(c - 'a' + 10);
-		} else if (c >= 'A' && c <= 'F') {
-			nibble = NumericCast<uint8_t>(c - 'A' + 10);
-		} else {
-			return false;
-		}
-		value = NumericCast<uint8_t>((value << 4) | nibble);
-	}
-	out = value;
-	return true;
-}
-
-bool HexBytes(const string &text, idx_t from, idx_t count, uint8_t *out) {
-	for (idx_t i = 0; i < count; i++) {
-		if (!HexByte(text.c_str() + from + 2 * i, out[i])) {
-			return false;
-		}
-	}
-	return true;
-}
-
 //! the `k=v,k=v` form OTel uses for resource attributes
 vector<std::pair<string, string>> ParsePairs(const string &text) {
 	vector<std::pair<string, string>> pairs;
@@ -289,29 +260,6 @@ OtlpConfig OtlpConfig::From(DatabaseInstance &db) {
 	return config;
 }
 
-bool ParseTraceparent(const string &traceparent, uint8_t trace_id[16], uint8_t span_id[8], uint8_t &flags) {
-	// 00-<32 hex>-<16 hex>-<2 hex> = 55 characters, version 00 only (the W3C recommendation for a
-	// consumer that knows no other)
-	if (traceparent.size() != 55 || traceparent[2] != '-' || traceparent[35] != '-' || traceparent[52] != '-') {
-		return false;
-	}
-	if (traceparent[0] != '0' || traceparent[1] != '0') {
-		return false;
-	}
-	if (!HexBytes(traceparent, 3, 16, trace_id) || !HexBytes(traceparent, 36, 8, span_id) ||
-	    !HexBytes(traceparent, 53, 1, &flags)) {
-		return false;
-	}
-	bool trace_zero = true, span_zero = true;
-	for (int i = 0; i < 16; i++) {
-		trace_zero = trace_zero && trace_id[i] == 0;
-	}
-	for (int i = 0; i < 8; i++) {
-		span_zero = span_zero && span_id[i] == 0;
-	}
-	return !trace_zero && !span_zero; // an all-zero id is invalid by the specification
-}
-
 OtelSeverity SeverityOf(const acl::AuditEvent &event) {
 	if (event.allowed) {
 		return OtelSeverity::INFO;
@@ -374,40 +322,19 @@ string ObjectsJson(const acl::AuditEvent &event) {
 	return CloseList(json, skipped);
 }
 
-void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &event, const vector<string> &claims) {
-	using opentelemetry::common::SystemTimestamp;
-	record.SetTimestamp(SystemTimestamp(std::chrono::microseconds(event.ts_us)));
-	record.SetObservedTimestamp(SystemTimestamp(std::chrono::system_clock::now()));
-	switch (SeverityOf(event)) {
-	case OtelSeverity::INFO:
-		record.SetSeverity(opentelemetry::logs::Severity::kInfo);
-		break;
-	case OtelSeverity::WARN:
-		record.SetSeverity(opentelemetry::logs::Severity::kWarn);
-		break;
-	default:
-		record.SetSeverity(opentelemetry::logs::Severity::kError);
-	}
-	auto body = BodyOf(event);
-	record.SetBody(opentelemetry::common::AttributeValue(opentelemetry::nostd::string_view(body)));
-	// R1.2: the trace context, or nothing - a malformed value sets neither and is not exported
-	uint8_t trace_id[16], span_id[8], flags = 0;
-	if (!event.traceparent.empty() && ParseTraceparent(event.traceparent, trace_id, span_id, flags)) {
-		record.SetTraceId(opentelemetry::trace::TraceId(opentelemetry::nostd::span<const uint8_t, 16>(trace_id, 16)));
-		record.SetSpanId(opentelemetry::trace::SpanId(opentelemetry::nostd::span<const uint8_t, 8>(span_id, 8)));
-		record.SetTraceFlags(opentelemetry::trace::TraceFlags(flags));
-	}
+void FillAttributes(const acl::AuditEvent &event, const vector<string> &claims,
+                    const std::function<void(const char *, const opentelemetry::common::AttributeValue &)> &set) {
 	// R1.1: every field an `acl.` attribute, present only when the event carries it. The values are
-	// copied by the recordable at SetAttribute (the OTLP recordable serialises into its proto), so
+	// copied by the recordable at SetAttribute (the OTLP recordables serialise into their proto), so
 	// temporaries are fine here.
 	auto text = [&](const char *key, const string &value) {
 		if (!value.empty()) {
-			record.SetAttribute(key, opentelemetry::common::AttributeValue(opentelemetry::nostd::string_view(value)));
+			set(key, opentelemetry::common::AttributeValue(opentelemetry::nostd::string_view(value)));
 		}
 	};
 	auto number = [&](const char *key, int64_t value) {
 		if (value >= 0) {
-			record.SetAttribute(key, opentelemetry::common::AttributeValue(value));
+			set(key, opentelemetry::common::AttributeValue(value));
 		}
 	};
 	text("acl.kind", event.kind);
@@ -441,6 +368,34 @@ void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &even
 	text("acl.level", acl::AuditLevelName(event.level));
 	number("acl.seq", event.seq);
 	text("acl.node", event.node);
+}
+
+void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &event, const vector<string> &claims) {
+	using opentelemetry::common::SystemTimestamp;
+	record.SetTimestamp(SystemTimestamp(std::chrono::microseconds(event.ts_us)));
+	record.SetObservedTimestamp(SystemTimestamp(std::chrono::system_clock::now()));
+	switch (SeverityOf(event)) {
+	case OtelSeverity::INFO:
+		record.SetSeverity(opentelemetry::logs::Severity::kInfo);
+		break;
+	case OtelSeverity::WARN:
+		record.SetSeverity(opentelemetry::logs::Severity::kWarn);
+		break;
+	default:
+		record.SetSeverity(opentelemetry::logs::Severity::kError);
+	}
+	auto body = BodyOf(event);
+	record.SetBody(opentelemetry::common::AttributeValue(opentelemetry::nostd::string_view(body)));
+	// R1.2: the trace context, or nothing - a malformed value sets neither and is not exported
+	uint8_t trace_id[16], span_id[8], flags = 0;
+	if (!event.traceparent.empty() && ParseTraceparent(event.traceparent, trace_id, span_id, flags)) {
+		record.SetTraceId(opentelemetry::trace::TraceId(opentelemetry::nostd::span<const uint8_t, 16>(trace_id, 16)));
+		record.SetSpanId(opentelemetry::trace::SpanId(opentelemetry::nostd::span<const uint8_t, 8>(span_id, 8)));
+		record.SetTraceFlags(opentelemetry::trace::TraceFlags(flags));
+	}
+	FillAttributes(event, claims, [&](const char *key, const opentelemetry::common::AttributeValue &value) {
+		record.SetAttribute(key, value);
+	});
 }
 
 OtlpExporter::OtlpExporter(const OtlpConfig &config_p) : config(config_p) {

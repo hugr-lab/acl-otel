@@ -1,6 +1,6 @@
 # Spec 008: OTLP traces - the decision as a span, hung under the request that caused it
 
-- **Status**: draft
+- **Status**: implemented (2026-09-15)
 - **Date**: 2026-09-14
 - **Author**: hugr lab
 
@@ -91,8 +91,10 @@ Settings are GLOBAL with a callback that refuses any other scope (C8), like ever
 
 ### The span itself
 
-- **Name**: `acl <statement class>` - `acl SELECT`, `acl MANAGEMENT`, `acl NATIVE`. The class is the
-  base's bounded `statement` field, never the SQL text (C5). A session span is `acl session`.
+- **Name**: `acl <statement class>` - `acl SELECT`, `acl MANAGE`, `acl NATIVE`. The class is the
+  base's bounded `statement` field (it writes `select` / `manage` / `native`, lower-case; the name
+  upper-cases it, the `acl.statement` attribute keeps it as written), never the SQL text (C5). A
+  session span is `acl session`.
 - **Kind**: `kInternal`. The door's RPC is the server span and it is not ours; this is work inside
   the node.
 - **Attributes**: the same bounded set the log record carries - `acl.verdict`, `acl.reason_code`,
@@ -114,10 +116,29 @@ worse than either alone.
 
 ### Cost
 
-The span is built on the audit thread, from an event the sink already has (R10.1: `OnEvent` stays
-O(1) and does no I/O). Its own queue and batch, sized like the logs' (R10.3). `acl_otel_traces_flush()`
-for tests and for a node about to exit. Self-metrics gain `acl_otel.spans` (`exported` / `dropped`
-by why), beside the record and metric counters of spec 006.
+On the audit thread the sink only *judges* the event (`SpanCandidate`: the kind, a measured
+duration, a traceparent that parses, its flags - O(1), no allocation beyond the copy) and pushes it
+onto a second lane; the SDK span is built by that lane's worker, from the copy. The lane is the
+same `EventQueue` the records ride - one bounded queue, one worker, batches to an `Exporter` - so a
+slow trace backend never holds a log record, and each lane is counted apart. Its queue and batch
+are sized like the logs' (`acl_otel_queue_size` / `_batch_size` / `_flush_interval`, R10.3).
+`acl_otel_traces_flush()` drains it now, bounded, for tests and for a node about to exit; the
+base's own `Flush()` (a level change, shutdown) drains both lanes, each within its bound.
+
+What the node says about it:
+
+- `acl_otel_status()` gains a `traces` object - `mode`, `session_spans`, the lane's `exporter`,
+  `queue_fill` / `queue_size`, `received` (what the lane was handed, the caller's unsampled ones
+  included, so `received = exported + every dropped + queued` holds), `exported`, `batches`,
+  `batches_failed`, `dropped{queue, no_exporter, unsampled}`, `export_errors`, `last_export_us`,
+  `last_error` - and `null` while traces are off, because nothing is allocated then.
+- A lane's losses outlive it: when traces go off (or the sink stops) the lane's queue, no-exporter
+  and export-error counts are folded into a running total that strict health keeps judging, so a
+  lane rebuilt at zero cannot leave the node "healthy" until its new losses out-count the old.
+- Self-metrics (spec 006) gain `acl_otel.spans.exported`, `acl_otel.spans.dropped{why}` with
+  `queue` / `no_exporter` / `export_error` / `unsampled`, and the gauge `acl_otel.spans.queue_fill`.
+  `unsampled` is the caller's decision (flags `00`), counted apart from a loss: `acl_otel.healthy`
+  (R7.3) counts a span's queue, no-exporter and export-error drops as losses and never that one.
 
 ### Implementation notes - what is already in the box
 
@@ -144,6 +165,14 @@ remembered, because these are the details that cost an afternoon:
   signal for spans as much as for records. Reuse it; do not add a second handler.
 - **`SetResource`** takes the same resource the logs and metrics build (R1.3) - build it once, share
   it, do not re-derive `service.instance.id`.
+- **Where it landed.** `src/acl_otel_traces.cpp` is the SDK-free half - the mode, the traceparent
+  parser (moved out of the log exporter so the sink's Makefile-compiled test links it without the
+  SDK), `SpanCandidate`, `SpanDurationUs`; `src/acl_otel_otlp_traces.cpp` is the transport -
+  `OtlpTraceExporter : Exporter`, `IdentityOf`, `FillSpan`. The attributes of R1.1 are one
+  function now (`FillAttributes`), called by the record's `Fill` and the span's `FillSpan`, which
+  is what "whatever spec 002 may put on a record, this puts on a span, and nothing else" means in
+  code. The lane's transport refuses a batch that carries an unmeasured event rather than export a
+  zero-length span - unreachable through the sink's gate, loud if it ever is.
 
 ## Enforcement & security
 
@@ -171,11 +200,21 @@ remembered, because these are the details that cost an afternoon:
 - **Beside acl** (the two-loadable test, `ACL_EXT`): a real statement through the base under
   `ACL ... TRACE 'x' PARENT '<tp>'`, asserting the span the receiver sees hangs under `<tp>`. This is
   the one test that proves the marker, the base's event and our span agree - the others stub the
-  event.
-- **Local stack** (`deploy/local-stack`): the Collector config gains a `traces` pipeline and the
-  README a line about seeing the decision inside a request in Grafana. The metrics pipeline was added
-  after the same omission was found by hand (spec 003), so the check is: send one traced statement,
-  look at the trace, see the span.
+  event. It lives in `test_acl_otel_traces_otlp` (the receiver needs the protobuf classes, which
+  the Makefile-compiled contract test does not link): the binary runs its transport checks always,
+  and the round trip when `ACL_EXT` is set - CI's beside-acl step runs it a second time with the
+  base's artifact and `assert_ran` refuses a `SKIP`. The SQL side (`acl_otel_beside_acl.test`)
+  asserts the status: a traced statement counted on the lane, an untraced one not, under `linked`.
+- **The sink's lane** (`test_acl_otel_sink`, no SDK): fed after the sampler, only with candidates,
+  the caller's `00` counted apart, sessions behind their switch, gone when off, and `Flush` bounded
+  with a stalled span backend.
+- **The settings** (`acl_otel_traces.test`): GLOBAL, judged at the SET, the lane on the records'
+  endpoint with `/v1/traces`, `null` in the status while off, and read again at `acl_otel_start()`
+  (the read-twice rule of CLAUDE.md).
+- **Local stack** (`deploy/local-stack`): Tempo joins Loki and Prometheus, the Collector config
+  gains a `traces` pipeline, Grafana a Tempo datasource, and the README the line about seeing the
+  decision inside a request. The metrics pipeline was added after the same omission was found by
+  hand (spec 003), so the check is: send one traced statement, look at the trace, see the span.
 
 ## Alternatives considered
 

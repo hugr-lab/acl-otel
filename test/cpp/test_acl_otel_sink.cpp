@@ -2,7 +2,8 @@
 // exporter does, batches reach the exporter in order and in the configured size, a full queue drops
 // and counts, an exporter that fails is counted as export errors, none configured as "no exporter",
 // Flush drains what is queued and never waits on a stuck transport longer than its bound, and Stop
-// joins the worker. Build + run via `GEN=ninja make test-cpp`.
+// joins the worker. Spec 008's lane: fed after the sampler, only with what a span can be built from,
+// counted apart, gone when traces are off. Build + run via `GEN=ninja make test-cpp`.
 
 #include "acl_otel.hpp"
 #include "acl_otel_test_util.hpp"
@@ -154,6 +155,84 @@ int main() {
 		Check(Within(2000, [&] { return recording->Count() == 8; }),
 		      "a batch bigger than the queue still leaves without waiting for the flush timer");
 		Check(sink.stats.dropped_queue == 0, "...and nothing was dropped on the way");
+	}
+	{
+		// spec 008: the span lane - fed with span candidates only, after the sampler, counted apart
+		auto recording = make_shared_ptr<Recording>();
+		auto lane_recording = make_shared_ptr<Recording>();
+		acl_otel::OtelSink sink(100, 1, 20, recording);
+		Check(!sink.Traces() && sink.TracesMode() == acl_otel::TraceMode::OFF, "no lane until traces are on");
+		auto lane = make_shared_ptr<acl_otel::EventQueue>(100, 1, 20, lane_recording);
+		sink.SetTraces(lane, acl_otel::TraceMode::LINKED, false);
+		auto traced = MakeEvent(1);
+		traced.rewrite_us = 100;
+		traced.traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+		auto orphan = MakeEvent(2);
+		orphan.rewrite_us = 100;
+		auto unsampled = MakeEvent(4);
+		unsampled.rewrite_us = 100;
+		unsampled.traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00";
+		auto unmeasured = MakeEvent(5); // rewrite_us stays -1
+		unmeasured.traceparent = traced.traceparent;
+		sink.OnEvent(traced);
+		sink.OnEvent(orphan);
+		sink.OnEvent(unsampled);
+		sink.OnEvent(unmeasured);
+		Check(Within(2000, [&] { return recording->Count() == 4; }), "every record went out on its own lane");
+		Check(Within(2000, [&] { return lane_recording->Count() == 1; }), "linked: one span, the traced decision");
+		Check(Within(2000, [&] { return lane->stats.exported == 1; }) && lane->stats.received == 2 &&
+		          lane->stats.unsampled == 1,
+		      "the lane counts what it was handed, and the caller's 00 apart");
+		{
+			std::lock_guard<std::mutex> guard(lane_recording->lock);
+			Check(lane_recording->batches[0][0] == 1, "...and it is the traced one");
+		}
+		sink.SetTraces(lane, acl_otel::TraceMode::ALL, false);
+		sink.OnEvent(orphan);
+		Check(Within(2000, [&] { return lane_recording->Count() == 2; }), "all: the orphan is a span too");
+		auto session = MakeEvent(7);
+		session.kind = "session";
+		session.duration_us = 5;
+		sink.OnEvent(session);
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		Check(lane_recording->Count() == 2, "a session close is not a span until its switch is on");
+		sink.SetTraces(lane, acl_otel::TraceMode::ALL, true);
+		sink.OnEvent(session);
+		Check(Within(2000, [&] { return lane_recording->Count() == 3; }), "...and is one with it");
+		// spec 005: a record and its span are sampled together
+		sink.SetSampler(make_shared_ptr<acl_otel::Sampler>("0"));
+		sink.OnEvent(traced);
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		Check(lane_recording->Count() == 3 && sink.stats.sampled == 1, "a sampled-away decision is no span either");
+		sink.SetSampler(nullptr);
+		// off: the lane is detached, and what arrives now is not a span
+		sink.SetTraces(nullptr, acl_otel::TraceMode::OFF, false);
+		Check(!sink.Traces(), "off: no lane");
+		sink.OnEvent(traced);
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		Check(lane_recording->Count() == 3, "...and nothing more arrives");
+		lane->Stop();
+	}
+	{
+		// Flush drains both lanes, each within its own bound, so a stalled trace backend never holds
+		// the base's audit thread longer than the records' bound plus the spans'
+		auto recording = make_shared_ptr<Recording>();
+		auto stalled = make_shared_ptr<Recording>();
+		stalled->stall_ms = 5000;
+		acl_otel::OtelSink sink(100, 1, 20, recording);
+		auto lane = make_shared_ptr<acl_otel::EventQueue>(100, 1, 20, stalled);
+		sink.SetTraces(lane, acl_otel::TraceMode::ALL, false);
+		auto traced = MakeEvent(1);
+		traced.rewrite_us = 10;
+		sink.OnEvent(traced);
+		auto started = std::chrono::steady_clock::now();
+		sink.Flush();
+		auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+		Check(spent.count() < 4500,
+		      "Flush behind a stalled span lane returned in " + std::to_string(spent.count()) + "ms");
+		Check(sink.FlushNow(), "the records' own flush answers true: their lane is idle");
+		sink.Stop();
+		Check(sink.stats.received == 1 && lane->stats.received == 1, "one decision, on both lanes");
 	}
 	std::printf("PASS\n");
 	return 0;

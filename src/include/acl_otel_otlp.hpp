@@ -1,10 +1,10 @@
 //===----------------------------------------------------------------------===//
-// acl_otel_otlp.hpp - the OTLP log exporter (spec 002)
+// acl_otel_otlp.hpp - the OTLP log exporter (spec 002) and the OTLP span exporter (spec 008)
 //
-// One SDK LogRecordExporter (HTTP/protobuf or gRPC) driven from the sink's worker, batch by batch:
-// one Recordable per event, filled from the event, one Export call. No SDK processor, no second
-// queue, no second thread - the sink of spec 001 keeps its semantics. The mapping (R1.1-R1.3) is
-// a free function so the tests judge it without a transport.
+// One SDK exporter per signal (HTTP/protobuf or gRPC) driven from a lane's worker, batch by batch:
+// one Recordable per event, filled from the event, one Export call. No SDK processor, no tracer, no
+// second queue, no second thread - the sink of spec 001 keeps its semantics. The mapping (R1.1-R1.3,
+// and the span's identity) is a free function so the tests judge it without a transport.
 //===----------------------------------------------------------------------===//
 
 #pragma once
@@ -17,6 +17,11 @@
 #include "opentelemetry/sdk/logs/exporter.h"
 #include "opentelemetry/sdk/logs/recordable.h"
 #include "opentelemetry/sdk/resource/resource.h"
+#include "opentelemetry/sdk/trace/exporter.h"
+#include "opentelemetry/sdk/trace/recordable.h"
+
+#include <functional>
+#include <random>
 
 namespace duckdb {
 namespace acl_otel {
@@ -65,9 +70,6 @@ vector<string> ParseClaimAttributes(const string &names);
 //! a claim value as a record may carry it: at most 256 bytes, with an ellipsis when it was longer
 string ClaimValue(const string &value);
 
-//! The W3C traceparent, parsed: `00-<32 hex>-<16 hex>-<2 hex>`; false on anything else
-bool ParseTraceparent(const string &traceparent, uint8_t trace_id[16], uint8_t span_id[8], uint8_t &flags);
-
 //! severity per R1.1: INFO allowed, WARN denied, ERROR when the source of the decision failed
 enum class OtelSeverity : uint8_t { INFO, WARN, ERROR };
 OtelSeverity SeverityOf(const acl::AuditEvent &event);
@@ -76,6 +78,11 @@ string BodyOf(const acl::AuditEvent &event);
 //! `acl.roles` and `acl.objects` as JSON strings - flat attributes, never nested (R1.6)
 string RolesJson(const acl::AuditEvent &event);
 string ObjectsJson(const acl::AuditEvent &event);
+//! R1.1's attributes, shared by the record (spec 002) and the span (spec 008): every field an `acl.`
+//! attribute, present only when the event carries it, and a claim value only when `claims` names
+//! its claim (R5.1) - everything else in principal.claims is dropped here. `set` receives each.
+void FillAttributes(const acl::AuditEvent &event, const vector<string> &claims,
+                    const std::function<void(const char *, const opentelemetry::common::AttributeValue &)> &set);
 
 class OtlpExporter : public Exporter {
 public:
@@ -97,6 +104,49 @@ private:
 	string description;
 	vector<string> header_names;
 	std::unique_ptr<opentelemetry::sdk::logs::LogRecordExporter> exporter; // the SDK factory hands out std::
+	unique_ptr<opentelemetry::sdk::resource::Resource> resource;
+	unique_ptr<opentelemetry::sdk::instrumentationscope::InstrumentationScope> scope;
+};
+
+//! spec 008: who a span is. From the caller's traceparent when the event carries a usable one - its
+//! trace id, its span id as our parent, its flags - else a trace of our own, rooted and sampled.
+//! Our own span id is fresh either way: unique, not unguessable, so the ordinary generator.
+struct SpanIdentity {
+	uint8_t trace_id[16] = {};
+	uint8_t span_id[8] = {};
+	uint8_t parent_span_id[8] = {};
+	bool has_parent = false;
+	uint8_t flags = 0x01;
+};
+SpanIdentity IdentityOf(const acl::AuditEvent &event, std::mt19937_64 &random);
+//! `acl SELECT` / `acl MANAGE` / `acl NATIVE` - the base's statement class, never the SQL text (C5);
+//! `acl session` for a session close; a lifecycle kind that never becomes a span keeps its kind
+string SpanNameOf(const acl::AuditEvent &event);
+//! kError only when the reason code says our side failed (`source_error`, `policy_error`); a refusal
+//! by policy is the system working and stays kUnset, like an allowed decision
+bool SpanIsError(const acl::AuditEvent &event);
+
+//! The OTLP span exporter (spec 008): the trace twin of OtlpExporter, built from the same config so
+//! an operator configures one endpoint and gets the third signal, fed by the sink's span lane.
+class OtlpTraceExporter : public Exporter {
+public:
+	//! throws InvalidInputException on a config the SDK refuses (a bad protocol, a bad endpoint)
+	explicit OtlpTraceExporter(const OtlpConfig &config);
+	~OtlpTraceExporter() override;
+	//! one span per event; false with `error` set when an event with no measured duration reached
+	//! the lane (the sink's gate never lets one through) or the transport failed
+	bool Export(const vector<acl::AuditEvent> &batch, string &error) override;
+	string Describe() const override;
+	//! fill one SDK span from one event: `[ts_us - duration, ts_us]`, kInternal, the name, the
+	//! status, the identity, and the same attributes the record carries. Shared with the tests.
+	static void FillSpan(opentelemetry::sdk::trace::Recordable &span, const acl::AuditEvent &event,
+	                     const SpanIdentity &identity, const vector<string> &claims);
+
+private:
+	OtlpConfig config;
+	string description;
+	std::mt19937_64 random; // Export runs on the lane's one worker; the tests call it from one thread
+	std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> exporter; // the SDK factory hands out std::
 	unique_ptr<opentelemetry::sdk::resource::Resource> resource;
 	unique_ptr<opentelemetry::sdk::instrumentationscope::InstrumentationScope> scope;
 };
