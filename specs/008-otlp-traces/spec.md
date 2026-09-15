@@ -119,6 +119,32 @@ O(1) and does no I/O). Its own queue and batch, sized like the logs' (R10.3). `a
 for tests and for a node about to exit. Self-metrics gain `acl_otel.spans` (`exported` / `dropped`
 by why), beside the record and metric counters of spec 006.
 
+### Implementation notes - what is already in the box
+
+Checked against the installed SDK (opentelemetry-cpp 1.24 from our vcpkg manifest) rather than
+remembered, because these are the details that cost an afternoon:
+
+- **No manifest change.** `otlp-http` and `otlp-grpc` already install the trace exporters; the
+  headers are `exporters/otlp/otlp_http_exporter.h` and `otlp_grpc_exporter.h` (with their
+  `_factory` / `_options` siblings), beside the log and metric ones we use.
+- **CMake needs three more targets**, and this is the one thing that is NOT symmetric with what
+  `CMakeLists.txt` links today: `opentelemetry-cpp::otlp_http_exporter`,
+  `opentelemetry-cpp::otlp_grpc_exporter` (the *trace* exporters are the unsuffixed ones - the log
+  and metric ones we link carry `_log_record_` / `_metric_` in the name) and
+  `opentelemetry-cpp::trace` beside `::logs` and `::metrics`.
+- **Recordables come from the exporter**, exactly as for logs: `SpanExporter::MakeRecordable()`
+  returns `std::unique_ptr<sdk::trace::Recordable>`, and `Export(nostd::span<...>)` takes them back.
+  So the transport owns the recordable's concrete type and we never name it.
+- **The setters we need are all virtual on `sdk::trace::Recordable`**: `SetIdentity(SpanContext,
+  parent_span_id)`, `SetName`, `SetSpanKind`, `SetStatus`, `SetAttribute`, `SetResource`,
+  `SetStartTime(common::SystemTimestamp)`, `SetDuration(std::chrono::nanoseconds)`,
+  `SetInstrumentationScope`. Nothing needs a `Tracer`, a provider or a processor.
+- **The SDK's HTTP-exporter lie applies here too** (the rule in CLAUDE.md, found in spec 002):
+  `Export` can answer `kSuccess` when its client failed, so the `QuietLogHandler` is the failure
+  signal for spans as much as for records. Reuse it; do not add a second handler.
+- **`SetResource`** takes the same resource the logs and metrics build (R1.3) - build it once, share
+  it, do not re-derive `service.instance.id`.
+
 ## Enforcement & security
 
 - **A span carries nothing a log record may not** (C5): no statement text, no claim value that is not
