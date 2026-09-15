@@ -1,6 +1,6 @@
 # Spec 004: logging on a connection - the level of a session, and where it came from
 
-- **Status**: draft (one decision open, below)
+- **Status**: closed 2026-09-15 - the base answered it, and the answer needed no code here
 - **Date**: 2026-09-08
 - **Author**: hugr lab
 
@@ -22,7 +22,31 @@ already verbose." The first half works today: `acl_session_audit_level` is the b
 (R4.2, by the base's construction). The second half - *why* a session sits at the level it does -
 needs the session's identity beside the rule that matched it, and only the base knows the first.
 
-## The open decision
+## Closed 2026-09-15 - by a fourth option nobody had listed
+
+The base took neither (a), (b) nor (c): it put the two missing facts on **its own** listing. Since
+duckdb-acl's spec 069 addendum, `acl_sessions()` carries `level` (the level in force) and
+`level_source` - `instance`, `policy` or `override` - beside the door it was opened through. So the
+operator's question, *why is this session verbose*, is answered in one place by the component that
+knows: `policy` means a rule of ours decided it.
+
+What that costs and buys, written down because it is the part a reader will want to argue with:
+
+- **No `CONTRACT_VERSION` bump**, no `SessionsReader`, no nested connection. Option (a) would have
+  bought every future consumer of the contract a session list; nobody has asked for one, and the
+  bump is not free.
+- **`acl_otel_sessions()` is not built**, as the design below already argued for its sibling
+  `acl_otel_session_level`: a function of ours over facts of the base's is a second place to look.
+- **What we lose** is the one detail the design wanted and the base does not carry: *which* of our
+  rules matched. `level_source = policy` says a rule did; `acl_otel_level_rules` says which rules
+  exist. Joining those two by eye is the residue, and it is small enough to leave.
+
+Pinned where the two halves meet: `test/sql/acl_otel_beside_acl.test` sets a rule, opens a session
+through the base, and asserts the base's own listing answers `level: all`, `level_source: policy`.
+Without the extension attached the same session reads `instance` - which is what makes the assertion
+worth having.
+
+## The open decision (as it stood, for the record)
 
 **(a) The base exposes its sessions through the contract** - a reader registered in `AuditHooks`
 (`SessionsReader`, the shape `AuditGauges::RegisterDynamic` already uses: attribute tuples plus a

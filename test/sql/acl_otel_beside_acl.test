@@ -57,6 +57,19 @@ SELECT count(*) > 0 FROM acl_audit_events() WHERE kind = 'session' AND detail = 
 ----
 true
 
+# spec 004, the operator's half: the base's own listing says the level in force AND where it came
+# from, and `policy` means OUR rule decided it - not the instance default, not an operator's
+# override. This is the one assertion that makes the two halves agree in public: the extension sets
+# a level through the contract, and the operator reads the answer from the base, in one place.
+# (string matching, like the base's own acl_session.test: the listing is a JSON string and this file
+# must not depend on the json extension being loadable in the runner)
+query III
+SELECT acl_sessions() LIKE '%"subject":"ua"%',
+       acl_sessions() LIKE '%"level":"all"%',
+       acl_sessions() LIKE '%"level_source":"policy"%';
+----
+true	true	true
+
 # ...and the sink saw them: the extension counts what the base handed it
 query I
 SELECT acl_otel_status() LIKE '%"received":0%';
