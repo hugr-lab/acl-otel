@@ -1,7 +1,9 @@
-// The sink and its worker (spec 001, R1.5 / R6.2 / R7 / R10.1): the base's audit thread hands us an
-// event, we copy it onto a bounded queue and return; one worker thread pops batches and exports.
-// Nothing here can slow a decision: the base already decoupled delivery from the decision, and this
-// decouples the network from delivery.
+// The sink and its lanes (spec 001, R1.5 / R6.2 / R7 / R10.1): the base's audit thread hands us an
+// event, we copy it onto a bounded queue and return; one worker thread per lane pops batches and
+// exports. Nothing here can slow a decision: the base already decoupled delivery from the decision,
+// and this decouples the network from delivery. The records (spec 002) and the spans (spec 008) are
+// two lanes of the same shape, so a slow trace backend never holds a log record and each is
+// counted apart.
 
 #include "acl_otel.hpp"
 
@@ -21,8 +23,9 @@ int64_t NowMicros() {
 
 } // namespace
 
-OtelSink::OtelSink(idx_t queue_size_p, idx_t batch_size_p, int64_t flush_interval_ms_p, shared_ptr<Exporter> exporter_p)
-    // a batch larger than the queue would never be reached, and OnEvent would stop waking the worker
+EventQueue::EventQueue(idx_t queue_size_p, idx_t batch_size_p, int64_t flush_interval_ms_p,
+                       shared_ptr<Exporter> exporter_p)
+    // a batch larger than the queue would never be reached, and Push would stop waking the worker
     // at all: the queue would fill, drop, and drain only on the flush timer. So a batch is at most a
     // queue.
     : queue_size(queue_size_p == 0 ? 1 : queue_size_p),
@@ -32,6 +35,131 @@ OtelSink::OtelSink(idx_t queue_size_p, idx_t batch_size_p, int64_t flush_interva
 		exporter = make_shared_ptr<NoneExporter>();
 	}
 	worker = std::thread([this] { Run(); });
+}
+
+EventQueue::~EventQueue() {
+	Stop();
+}
+
+void EventQueue::Push(const acl::AuditEvent &event) {
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if (stopping || queue.size() >= queue_size) {
+			stats.dropped_queue++;
+			return;
+		}
+		queue.push_back(event);
+		if (queue.size() < batch_size) {
+			return; // the worker wakes on its own clock; a full batch wakes it now
+		}
+	}
+	wake.notify_one();
+}
+
+bool EventQueue::FlushNow() {
+	std::unique_lock<std::mutex> guard(lock);
+	if (stopping) {
+		return false;
+	}
+	flush_requested = true;
+	wake.notify_one();
+	// bounded: the base calls this on its audit thread, and a transport that hangs must not hold it
+	drained.wait_for(guard, std::chrono::seconds(2), [this] { return !flush_requested || stopping; });
+	return !flush_requested && !stopping;
+}
+
+void EventQueue::SetExporter(shared_ptr<Exporter> exporter_p) {
+	shared_ptr<Exporter> previous;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		previous = std::move(exporter);
+		exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoneExporter>();
+	}
+	// `previous` dies HERE, outside the lock: an SDK exporter's destructor shuts its client down
+	// (bounded, but up to two seconds), and Push must not wait behind that on the audit thread
+}
+
+string EventQueue::ExporterName() {
+	std::lock_guard<std::mutex> guard(lock);
+	return exporter->Describe();
+}
+
+string EventQueue::LastError() {
+	std::lock_guard<std::mutex> guard(lock);
+	return stats.last_error;
+}
+
+idx_t EventQueue::QueueFill() {
+	std::lock_guard<std::mutex> guard(lock);
+	return queue.size();
+}
+
+void EventQueue::Stop() {
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if (stopping) {
+			return;
+		}
+		stopping = true;
+	}
+	wake.notify_all();
+	drained.notify_all();
+	if (worker.joinable()) {
+		worker.join();
+	}
+}
+
+void EventQueue::Run() {
+	std::unique_lock<std::mutex> guard(lock);
+	while (!stopping) {
+		wake.wait_for(guard, std::chrono::milliseconds(flush_interval_ms),
+		              [this] { return stopping || flush_requested || queue.size() >= batch_size; });
+		while (!queue.empty() && !stopping) {
+			vector<acl::AuditEvent> batch;
+			while (!queue.empty() && batch.size() < batch_size) {
+				batch.push_back(std::move(queue.front()));
+				queue.pop_front();
+			}
+			guard.unlock();
+			ExportBatch(batch);
+			guard.lock();
+		}
+		if (flush_requested) {
+			flush_requested = false;
+			drained.notify_all();
+		}
+	}
+	// what is still queued at the end is lost, and said so (R6.2)
+	stats.dropped_queue += NumericCast<int64_t>(queue.size());
+	queue.clear();
+}
+
+void EventQueue::ExportBatch(vector<acl::AuditEvent> &batch) {
+	string error;
+	shared_ptr<Exporter> transport;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		transport = exporter; // a batch finishes on the transport it started with
+	}
+	bool ok = transport->Export(batch, error);
+	stats.batches++;
+	if (ok) {
+		stats.exported += NumericCast<int64_t>(batch.size());
+		stats.last_export_us = NowMicros();
+		return;
+	}
+	if (!transport->Configured()) {
+		stats.dropped_no_exporter += NumericCast<int64_t>(batch.size());
+		return;
+	}
+	stats.export_errors += NumericCast<int64_t>(batch.size());
+	stats.exported_batches_failed++;
+	std::lock_guard<std::mutex> guard(lock);
+	stats.last_error = error;
+}
+
+OtelSink::OtelSink(idx_t queue_size, idx_t batch_size, int64_t flush_interval_ms, shared_ptr<Exporter> exporter)
+    : records(queue_size, batch_size, flush_interval_ms, std::move(exporter)) {
 }
 
 OtelSink::~OtelSink() {
@@ -57,150 +185,108 @@ double OtelSink::SampleRatio(const vector<string> &roles) {
 	return ratio ? ratio->RatioFor(roles) : 1.0;
 }
 
-void OtelSink::OnEvent(const acl::AuditEvent &event) {
-	stats.received++;
-	{
-		// spec 003 first: an event that the queue then drops still shaped a histogram, and the base's
-		// own counters counted it too - the two agree
-		shared_ptr<OtelMetrics> observers;
-		{
-			std::lock_guard<std::mutex> guard(lock);
-			observers = metrics;
-		}
-		if (observers) {
-			observers->Observe(event);
-		}
-	}
-	{
-		// spec 005: what a backend stores may be thinned; what the node counted above never is
-		shared_ptr<Sampler> ratio;
-		{
-			std::lock_guard<std::mutex> guard(lock);
-			ratio = sampler;
-		}
-		if (ratio && !ratio->Keep(event)) {
-			stats.sampled++;
-			return;
-		}
-	}
+void OtelSink::SetTraces(shared_ptr<EventQueue> lane, TraceMode mode, bool session_spans_p) {
+	shared_ptr<EventQueue> previous;
 	{
 		std::lock_guard<std::mutex> guard(lock);
-		if (stopping || queue.size() >= queue_size) {
-			stats.dropped_queue++;
-			return;
-		}
-		queue.push_back(event);
-		if (queue.size() < batch_size) {
-			return; // the worker wakes on its own clock; a full batch wakes it now
+		previous = std::move(spans);
+		spans = std::move(lane);
+		trace_mode = spans ? mode : TraceMode::OFF;
+		session_spans = session_spans_p;
+	}
+	// `previous` dies HERE, outside the lock, when this was its last reference: a lane's destructor
+	// joins its worker, which may be mid-export, and OnEvent must not wait behind that
+}
+
+shared_ptr<EventQueue> OtelSink::Traces() {
+	std::lock_guard<std::mutex> guard(lock);
+	return spans;
+}
+
+TraceMode OtelSink::TracesMode() {
+	std::lock_guard<std::mutex> guard(lock);
+	return trace_mode;
+}
+
+bool OtelSink::SessionSpans() {
+	std::lock_guard<std::mutex> guard(lock);
+	return session_spans;
+}
+
+void OtelSink::OnEvent(const acl::AuditEvent &event) {
+	stats.received++;
+	shared_ptr<OtelMetrics> observers;
+	shared_ptr<Sampler> ratio;
+	shared_ptr<EventQueue> lane;
+	TraceMode mode;
+	bool sessions;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		observers = metrics;
+		ratio = sampler;
+		lane = spans;
+		mode = trace_mode;
+		sessions = session_spans;
+	}
+	// spec 003 first: an event that the queue then drops still shaped a histogram, and the base's
+	// own counters counted it too - the two agree
+	if (observers) {
+		observers->Observe(event);
+	}
+	// spec 005: what a backend stores may be thinned; what the node counted above never is. A
+	// record and its span are one decision, so the span lane is fed from here too (spec 008).
+	if (ratio && !ratio->Keep(event)) {
+		stats.sampled++;
+		return;
+	}
+	records.Push(event);
+	if (lane) {
+		bool unsampled = false;
+		if (SpanCandidate(event, mode, sessions, unsampled)) {
+			lane->stats.received++;
+			lane->Push(event);
+		} else if (unsampled) {
+			lane->stats.received++;
+			lane->stats.unsampled++;
 		}
 	}
-	wake.notify_one();
 }
 
 void OtelSink::Flush() {
-	FlushNow();
+	// both lanes, each within its own bound: the base calls this on its audit thread
+	records.FlushNow();
+	auto lane = Traces();
+	if (lane) {
+		lane->FlushNow();
+	}
 }
 
 bool OtelSink::FlushNow() {
-	std::unique_lock<std::mutex> guard(lock);
-	if (stopping) {
-		return false;
-	}
-	flush_requested = true;
-	wake.notify_one();
-	// bounded: the base calls this on its audit thread, and a transport that hangs must not hold it
-	drained.wait_for(guard, std::chrono::seconds(2), [this] { return !flush_requested || stopping; });
-	return !flush_requested && !stopping;
+	return records.FlushNow();
 }
 
-void OtelSink::SetExporter(shared_ptr<Exporter> exporter_p) {
-	shared_ptr<Exporter> previous;
-	{
-		std::lock_guard<std::mutex> guard(lock);
-		previous = std::move(exporter);
-		exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoneExporter>();
-	}
-	// `previous` dies HERE, outside the lock: an SDK exporter's destructor shuts its client down
-	// (bounded, but up to two seconds), and OnEvent must not wait behind that on the audit thread
+void OtelSink::SetExporter(shared_ptr<Exporter> exporter) {
+	records.SetExporter(std::move(exporter));
 }
 
 string OtelSink::ExporterName() {
-	std::lock_guard<std::mutex> guard(lock);
-	return exporter->Describe();
+	return records.ExporterName();
 }
 
 string OtelSink::LastError() {
-	std::lock_guard<std::mutex> guard(lock);
-	return stats.last_error;
+	return records.LastError();
 }
 
 idx_t OtelSink::QueueFill() {
-	std::lock_guard<std::mutex> guard(lock);
-	return queue.size();
+	return records.QueueFill();
 }
 
 void OtelSink::Stop() {
-	{
-		std::lock_guard<std::mutex> guard(lock);
-		if (stopping) {
-			return;
-		}
-		stopping = true;
+	records.Stop();
+	auto lane = Traces();
+	if (lane) {
+		lane->Stop(); // outside our lock: Stop joins the lane's worker, which may be mid-export
 	}
-	wake.notify_all();
-	drained.notify_all();
-	if (worker.joinable()) {
-		worker.join();
-	}
-}
-
-void OtelSink::Run() {
-	std::unique_lock<std::mutex> guard(lock);
-	while (!stopping) {
-		wake.wait_for(guard, std::chrono::milliseconds(flush_interval_ms),
-		              [this] { return stopping || flush_requested || queue.size() >= batch_size; });
-		while (!queue.empty() && !stopping) {
-			vector<acl::AuditEvent> batch;
-			while (!queue.empty() && batch.size() < batch_size) {
-				batch.push_back(std::move(queue.front()));
-				queue.pop_front();
-			}
-			guard.unlock();
-			ExportBatch(batch);
-			guard.lock();
-		}
-		if (flush_requested) {
-			flush_requested = false;
-			drained.notify_all();
-		}
-	}
-	// what is still queued at the end is lost, and said so (R6.2)
-	stats.dropped_queue += NumericCast<int64_t>(queue.size());
-	queue.clear();
-}
-
-void OtelSink::ExportBatch(vector<acl::AuditEvent> &batch) {
-	string error;
-	shared_ptr<Exporter> transport;
-	{
-		std::lock_guard<std::mutex> guard(lock);
-		transport = exporter; // a batch finishes on the transport it started with
-	}
-	bool ok = transport->Export(batch, error);
-	stats.batches++;
-	if (ok) {
-		stats.exported += NumericCast<int64_t>(batch.size());
-		stats.last_export_us = NowMicros();
-		return;
-	}
-	if (!transport->Configured()) {
-		stats.dropped_no_exporter += NumericCast<int64_t>(batch.size());
-		return;
-	}
-	stats.export_errors += NumericCast<int64_t>(batch.size());
-	stats.exported_batches_failed++;
-	std::lock_guard<std::mutex> guard(lock);
-	stats.last_error = error;
 }
 
 } // namespace acl_otel

@@ -27,9 +27,9 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 # --- Standalone C++ tests (the duckdb-acl / mssql-extension style) -----------------------------
 # Each test/cpp/test_*.cpp is its own program, built from the already-compiled release tree and
 # linked against the shared libduckdb. Same generator as the main build: GEN=ninja make test-cpp.
-# the transport's test links the SDK and is a CMake target (below), not a Makefile-compiled one
-TEST_CPP_SOURCES := $(filter-out test/cpp/test_acl_otel_otlp.cpp test/cpp/test_acl_otel_metrics_otlp.cpp,\
-	$(wildcard test/cpp/test_*.cpp))
+# a transport's test links the SDK and is a CMake target (below), not a Makefile-compiled one
+TEST_CPP_SOURCES := $(filter-out test/cpp/test_acl_otel_otlp.cpp test/cpp/test_acl_otel_metrics_otlp.cpp \
+	test/cpp/test_acl_otel_traces_otlp.cpp, $(wildcard test/cpp/test_*.cpp))
 TEST_CPP_FLAGS := -std=c++17 -O2 -DNDEBUG -pthread
 TEST_CPP_DIR := build/test
 TEST_CPP_BINS := $(patsubst test/cpp/%.cpp,$(TEST_CPP_DIR)/%,$(TEST_CPP_SOURCES))
@@ -45,16 +45,18 @@ TEST_CPP_LINK = -L build/release/src -lduckdb -Wl,-rpath,$(abspath build/release
 # the extension's own translation units a test compiles in (they are not exported from libduckdb)
 $(TEST_CPP_DIR)/test_acl_otel_rules: TEST_CPP_EXTRA := src/acl_otel_rules.cpp
 $(TEST_CPP_DIR)/test_acl_otel_rules: src/acl_otel_rules.cpp src/include/acl_otel.hpp
-# the sink observes the metrics accumulators (spec 003), so the test links them too
+# the sink observes the metrics accumulators (spec 003) and gates the span lane (spec 008), so the
+# test links them too - the SDK-free half of traces only
 $(TEST_CPP_DIR)/test_acl_otel_sink: TEST_CPP_EXTRA := src/acl_otel_sink.cpp src/acl_otel_metrics.cpp \
-	src/acl_otel_sampling.cpp duckdb/third_party/yyjson/yyjson.cpp
+	src/acl_otel_sampling.cpp src/acl_otel_traces.cpp duckdb/third_party/yyjson/yyjson.cpp
 $(TEST_CPP_DIR)/test_acl_otel_sampling: TEST_CPP_EXTRA := src/acl_otel_sampling.cpp \
 	duckdb/third_party/yyjson/yyjson.cpp
 $(TEST_CPP_DIR)/test_acl_otel_sampling: src/acl_otel_sampling.cpp src/include/acl_otel.hpp
 $(TEST_CPP_DIR)/test_acl_otel_health: TEST_CPP_EXTRA := src/acl_otel_sampling.cpp \
 	duckdb/third_party/yyjson/yyjson.cpp
 $(TEST_CPP_DIR)/test_acl_otel_health: src/acl_otel_sampling.cpp src/include/acl_otel.hpp
-$(TEST_CPP_DIR)/test_acl_otel_sink: src/acl_otel_sink.cpp src/acl_otel_metrics.cpp src/include/acl_otel.hpp
+$(TEST_CPP_DIR)/test_acl_otel_sink: src/acl_otel_sink.cpp src/acl_otel_metrics.cpp src/acl_otel_traces.cpp \
+	src/include/acl_otel.hpp
 $(TEST_CPP_DIR)/test_acl_otel_metrics: TEST_CPP_EXTRA := src/acl_otel_metrics.cpp duckdb/third_party/yyjson/yyjson.cpp
 $(TEST_CPP_DIR)/test_acl_otel_metrics: src/acl_otel_metrics.cpp src/include/acl_otel_metrics.hpp
 
@@ -68,13 +70,14 @@ test-cpp:
 		echo "test-cpp: $(TEST_CPP_DUCKDB_LIB) missing - run 'GEN=ninja make' first" >&2; exit 1; }
 	@$(MAKE) --no-print-directory test-cpp-run
 
-# the transport's test is a CMake target (it links the SDK): built here on demand, run with the rest
+# a transport's test is a CMake target (it links the SDK): built here on demand, run with the rest
 TEST_CPP_CMAKE_BINS := build/release/extension/acl_otel/acl_otel_test_otlp \
-	build/release/extension/acl_otel/acl_otel_test_metrics_otlp
+	build/release/extension/acl_otel/acl_otel_test_metrics_otlp \
+	build/release/extension/acl_otel/acl_otel_test_traces_otlp
 
 test-cpp-run: $(TEST_CPP_BINS)
 	@test -n "$(TEST_CPP_BINS)" || { echo "test-cpp: no test/cpp/test_*.cpp sources found" >&2; exit 1; }
-	@cmake --build build/release --target acl_otel_test_otlp acl_otel_test_metrics_otlp \
+	@cmake --build build/release --target acl_otel_test_otlp acl_otel_test_metrics_otlp acl_otel_test_traces_otlp \
 		> build/test/cmake-tests.log 2>&1 || \
 		{ cat build/test/cmake-tests.log; exit 1; }
 	@fail=0; for b in $(TEST_CPP_BINS) $(TEST_CPP_CMAKE_BINS); do \

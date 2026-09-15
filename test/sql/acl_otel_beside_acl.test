@@ -132,6 +132,35 @@ true
 statement ok
 SET GLOBAL acl_otel_sample_allowed = '1';
 
+# spec 008: a statement the caller traced is a span candidate; under `linked` one without a parent
+# is not. The transport's failure is the records' (the same closed port), counted on the lane.
+statement ok
+SET GLOBAL acl_otel_traces = 'linked';
+
+statement ok
+ACL ROLE 'analyst' TRACE 'req-1' PARENT '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' SELECT count(*) FROM orders;
+
+statement ok
+ACL ROLE 'analyst' SELECT count(*) FROM orders;
+
+statement ok
+SELECT acl_audit_flush();
+
+query I
+SELECT acl_otel_traces_flush();
+----
+true
+
+query II
+SELECT s LIKE '%"traces":{"mode":"linked"%"received":1,%',
+       s LIKE '%"traces":{%"last_error":"the export failed (otlp/http -> http://127.0.0.1:1/v1/traces)%'
+FROM (SELECT acl_otel_status() AS s);
+----
+true	true
+
+statement ok
+SET GLOBAL acl_otel_traces = 'off';
+
 # the flush answers false once the sink is gone
 statement ok
 SELECT acl_otel_stop();

@@ -1,0 +1,121 @@
+# name: test/sql/acl_otel_traces.test
+# description: spec 008 - traces are off until an operator turns them on, the two settings are GLOBAL and judged at the SET, the span lane rides the records' endpoint, and a value set while stopped is read again at start
+# group: [sql]
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/extension/acl_otel/acl_otel.duckdb_extension';
+
+# off by default: nothing allocated, nothing to flush
+query II
+SELECT acl_otel_status() LIKE '%"traces":null%', acl_otel_traces_flush();
+----
+true	false
+
+# both settings are the operator's
+statement error
+SET acl_otel_traces = 'linked';
+----
+<REGEX>:.*acl_otel_traces is global - use SET GLOBAL.*
+
+statement error
+SET acl_otel_session_spans = true;
+----
+<REGEX>:.*acl_otel_session_spans is global - use SET GLOBAL.*
+
+# the mode is one of three, judged at the SET
+statement error
+SET GLOBAL acl_otel_traces = 'sometimes';
+----
+<REGEX>:.*acl_otel_traces accepts 'off', 'linked' or 'all', not 'sometimes'.*
+
+query I
+SELECT current_setting('acl_otel_traces');
+----
+off
+
+# on: the lane exists, on the stand-in while no endpoint is configured, and a flush answers
+statement ok
+SET GLOBAL acl_otel_traces = 'linked';
+
+query II
+SELECT s LIKE '%"traces":{"mode":"linked","session_spans":false,"exporter":"none (acl_otel_endpoint is empty)"%', acl_otel_traces_flush()
+FROM (SELECT acl_otel_status() AS s);
+----
+true	true
+
+# the endpoint of the records is the endpoint of the spans, with the traces path (spec 002's rule)
+statement ok
+SET GLOBAL acl_otel_timeout = 1;
+
+statement ok
+SET GLOBAL acl_otel_endpoint = 'http://127.0.0.1:1';
+
+query I
+SELECT acl_otel_status() LIKE '%"traces":{%"exporter":"otlp/http -> http://127.0.0.1:1/v1/traces"%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_protocol = 'grpc';
+
+query I
+SELECT acl_otel_status() LIKE '%"traces":{%"exporter":"otlp/grpc -> http://127.0.0.1:1"%';
+----
+true
+
+statement ok
+RESET acl_otel_protocol;
+
+# the session switch retunes the lane in place
+statement ok
+SET GLOBAL acl_otel_session_spans = true;
+
+query I
+SELECT acl_otel_status() LIKE '%"traces":{"mode":"linked","session_spans":true%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_traces = 'ALL';
+
+query I
+SELECT acl_otel_status() LIKE '%"traces":{"mode":"all","session_spans":true%';
+----
+true
+
+# off again: the lane is gone, and the settings keep their values
+statement ok
+SET GLOBAL acl_otel_traces = 'off';
+
+query III
+SELECT acl_otel_status() LIKE '%"traces":null%', acl_otel_traces_flush(), current_setting('acl_otel_session_spans');
+----
+true	false	true
+
+# a setting is read twice or it is read wrong: set while the sink is stopped, in force after start
+statement ok
+SELECT acl_otel_stop();
+
+statement ok
+SET GLOBAL acl_otel_traces = 'linked';
+
+query I
+SELECT acl_otel_status() LIKE '%"traces":null%';
+----
+true
+
+query I
+SELECT acl_otel_start();
+----
+true
+
+query I
+SELECT acl_otel_status() LIKE '%"traces":{"mode":"linked","session_spans":true,"exporter":"otlp/http -> http://127.0.0.1:1/v1/traces"%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_traces = 'off';
+
+statement ok
+SET GLOBAL acl_otel_endpoint = '';

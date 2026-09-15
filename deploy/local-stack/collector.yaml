@@ -1,4 +1,4 @@
-# Локальный стенд: узел -> Collector -> Loki (логи) + Prometheus (метрики) -> Grafana.
+# Локальный стенд: узел -> Collector -> Loki (логи) + Prometheus (метрики) + Tempo (трейсы) -> Grafana.
 receivers:
   otlp:
     protocols:
@@ -11,6 +11,8 @@ exporters:
     logs_endpoint: http://loki:3100/otlp/v1/logs
   otlphttp/prom:
     metrics_endpoint: http://prometheus:9090/api/v1/otlp/v1/metrics
+  otlphttp/tempo:
+    endpoint: http://tempo:4318
   debug: {verbosity: basic}
 service:
   pipelines:
@@ -22,3 +24,7 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [otlphttp/prom, debug]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/tempo, debug]

@@ -76,6 +76,14 @@ int64_t SettingInt64(DatabaseInstance &db, const char *name, int64_t fallback) {
 	return fallback;
 }
 
+bool SettingBool(DatabaseInstance &db, const char *name, bool fallback) {
+	Value value;
+	if (db.TryGetCurrentSetting(name, value) && !value.IsNull()) {
+		return value.GetValue<bool>();
+	}
+	return fallback;
+}
+
 shared_ptr<OtelState> OtelState::Of(DatabaseInstance &db) {
 	return db.GetObjectCache().GetOrCreate<OtelState>(ObjectType());
 }
@@ -127,6 +135,9 @@ bool OtelState::Start(DatabaseInstance &db) {
 		policy = make_shared_ptr<OtelPolicy>();
 		policy->SetRules(ParseLevelRules(rules_json));
 	}
+	// spec 008: the span lane, from the settings as they stand now - read here as well as in the
+	// SET, or a value set while the sink was stopped would come back as `off`
+	ApplyTraces(db, string(), Value(), *sink);
 	// spec 003: the metrics side, when the operator has not turned it off. Its transport is the
 	// same endpoint, protocol and headers as the logs'; its timer is its own.
 	Value on;
@@ -258,6 +269,21 @@ vector<MetricPoint> OtelState::SelfMetrics(DatabaseInstance &db) {
 		gauge("acl_otel.queue_fill", NumericCast<int64_t>(current->QueueFill()), "{event}",
 		      "events waiting to be exported");
 	}
+	// spec 008: the span lane's numbers, named apart; `unsampled` is the caller's decision, not a loss
+	auto lane = current ? current->Traces() : nullptr;
+	if (lane) {
+		auto &spans = lane->stats;
+		counter("acl_otel.spans.exported", spans.exported.load(), {}, "spans a backend received");
+		counter("acl_otel.spans.dropped", spans.dropped_queue.load(), {{"why", "queue"}}, "spans lost, by why");
+		counter("acl_otel.spans.dropped", spans.dropped_no_exporter.load(), {{"why", "no_exporter"}},
+		        "spans lost, by why");
+		counter("acl_otel.spans.dropped", spans.export_errors.load(), {{"why", "export_error"}}, "spans lost, by why");
+		counter("acl_otel.spans.dropped", spans.unsampled.load(), {{"why", "unsampled"}},
+		        "spans not built because the caller's traceparent said the trace is not recorded (spec 008), "
+		        "counted apart from a loss");
+		gauge("acl_otel.spans.queue_fill", NumericCast<int64_t>(lane->QueueFill()), "{span}",
+		      "spans waiting to be exported");
+	}
 	if (scrape) {
 		counter("acl_otel.metrics_ticks", scrape->stats.ticks.load(), {}, "metric scrapes attempted");
 		counter("acl_otel.metrics_errors", scrape->stats.export_errors.load(), {}, "metric scrapes a backend refused");
@@ -301,8 +327,16 @@ bool OtelState::Healthy(DatabaseInstance &db) {
 	if (scrape) {
 		drops += scrape->stats.export_errors.load();
 	}
+	// spec 008: a span the operator turned on and that did not arrive is a loss of the same kind;
+	// one the caller's flags kept out is not
+	auto lane = current->Traces();
+	if (lane) {
+		auto &spans = lane->stats;
+		drops += spans.dropped_queue.load() + spans.dropped_no_exporter.load() + spans.export_errors.load();
+	}
 	auto window = SettingInt64(db, "acl_otel_health_window", 60);
 	std::lock_guard<std::mutex> guard(lock);
+	drops += retired_span_losses;
 	return !health.Losing(drops, NowMicros(), window);
 }
 
@@ -315,6 +349,71 @@ bool OtelState::FlushMetrics() {
 		registry = hooks;
 	}
 	return current && registry && current->TickNow(*registry);
+}
+
+bool OtelState::FlushTraces() {
+	shared_ptr<OtelSink> current;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		current = sink;
+	}
+	auto lane = current ? current->Traces() : nullptr;
+	return lane && lane->FlushNow();
+}
+
+//! spec 008: `acl_otel_traces` and `acl_otel_session_spans` as they will be after this SET, on the
+//! running sink. `off` flushes what is queued (bounded) and tears the lane down; a mode builds the
+//! lane when there is none - its transport from the records' settings, its queue sized like theirs
+//! (R10.3) - or retunes a lane that exists.
+void OtelState::ApplyTraces(DatabaseInstance &db, const string &changed, const Value &value, OtelSink &target) {
+	auto mode_text = changed == "acl_otel_traces" ? (value.IsNull() ? string("off") : value.ToString())
+	                                              : SettingString(db, "acl_otel_traces", "off");
+	TraceMode mode;
+	if (!ParseTraceMode(mode_text, mode)) {
+		throw InvalidInputException("acl_otel_traces accepts 'off', 'linked' or 'all', not '%s'", mode_text);
+	}
+	bool session_spans = changed == "acl_otel_session_spans" ? (!value.IsNull() && value.GetValue<bool>())
+	                                                         : SettingBool(db, "acl_otel_session_spans", false);
+	auto lane = target.Traces();
+	if (mode == TraceMode::OFF) {
+		target.SetTraces(nullptr, mode, session_spans);
+		if (lane) {
+			lane->FlushNow(); // what was queued leaves, or is counted; then the worker is joined
+			lane->Stop();
+			RetireLane(*lane);
+		}
+		return;
+	}
+	if (!lane) {
+		auto queue = SettingInt64(db, "acl_otel_queue_size", 10000);
+		auto batch = SettingInt64(db, "acl_otel_batch_size", 512);
+		auto flush = SettingInt64(db, "acl_otel_flush_interval", 5);
+		lane = make_shared_ptr<EventQueue>(NumericCast<idx_t>(MaxValue<int64_t>(queue, 1)),
+		                                   NumericCast<idx_t>(MaxValue<int64_t>(batch, 1)),
+		                                   MaxValue<int64_t>(flush, 1) * 1000, BuildTraceExporter(db, changed, value));
+	}
+	target.SetTraces(lane, mode, session_spans);
+}
+
+//! a lane's losses outlive it: strict health (R7.3) judges a running total, and a lane rebuilt at
+//! zero would leave the node "healthy" until the new losses out-counted the old ones
+void OtelState::RetireLane(EventQueue &lane) {
+	auto &spans = lane.stats;
+	auto losses = spans.dropped_queue.load() + spans.dropped_no_exporter.load() + spans.export_errors.load();
+	std::lock_guard<std::mutex> guard(lock);
+	retired_span_losses += losses;
+}
+
+void OtelState::ReconfigureTraces(DatabaseInstance &db, const string &changed, const Value &value) {
+	shared_ptr<OtelSink> current;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		current = sink;
+	}
+	if (!current) {
+		return; // stopped: Start reads the settings again
+	}
+	ApplyTraces(db, changed, value, *current);
 }
 
 bool OtelState::Stop() {
@@ -344,6 +443,10 @@ bool OtelState::Stop() {
 	if (ending) {
 		ending->Flush();
 		ending->Stop();
+		auto lane = ending->Traces();
+		if (lane) {
+			RetireLane(*lane);
+		}
 	}
 	return true;
 }
@@ -583,6 +686,15 @@ shared_ptr<MetricsExporter> OtelState::BuildMetricsExporter(DatabaseInstance &db
 	return MakeOtlpMetricsExporter(config);
 }
 
+//! spec 008: the same endpoint, protocol, TLS and headers as the logs', on the span path
+shared_ptr<Exporter> OtelState::BuildTraceExporter(DatabaseInstance &db, const string &changed, const Value &value) {
+	auto config = ConfigAfter(db, changed, value);
+	if (!HaveEndpoint(config, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")) {
+		return make_shared_ptr<NoneExporter>();
+	}
+	return make_shared_ptr<OtlpTraceExporter>(config);
+}
+
 void OtelState::Reconfigure(DatabaseInstance &db, const string &changed, const Value &value) {
 	shared_ptr<OtelSink> current;
 	{
@@ -601,6 +713,11 @@ void OtelState::Reconfigure(DatabaseInstance &db, const string &changed, const V
 		metrics_now->SetExporter(BuildMetricsExporter(db, changed, value));
 	}
 	if (current) {
+		// spec 008: the span lane rides the same settings
+		auto lane = current->Traces();
+		if (lane) {
+			lane->SetExporter(BuildTraceExporter(db, changed, value));
+		}
 		current->SetExporter(std::move(exporter));
 	}
 }
@@ -675,6 +792,30 @@ string OtelState::StatusJson(DatabaseInstance &db) {
 		json += ",\"last_export_us\":" + (last > 0 ? std::to_string(last) : string("null"));
 		auto last_error = current->LastError();
 		json += ",\"last_error\":" + (last_error.empty() ? string("null") : JsonQuote(last_error));
+	}
+	// spec 008: the span lane, last - null while traces are off (nothing is allocated then)
+	auto lane = current ? current->Traces() : nullptr;
+	if (lane) {
+		auto &spans = lane->stats;
+		json += ",\"traces\":{\"mode\":" + JsonQuote(TraceModeName(current->TracesMode()));
+		json += ",\"session_spans\":" + string(current->SessionSpans() ? "true" : "false");
+		json += ",\"exporter\":" + JsonQuote(lane->ExporterName());
+		json += ",\"queue_fill\":" + std::to_string(lane->QueueFill());
+		json += ",\"queue_size\":" + std::to_string(lane->QueueSize());
+		json += ",\"received\":" + std::to_string(spans.received.load());
+		json += ",\"exported\":" + std::to_string(spans.exported.load());
+		json += ",\"batches\":" + std::to_string(spans.batches.load());
+		json += ",\"batches_failed\":" + std::to_string(spans.exported_batches_failed.load());
+		json += ",\"dropped\":{\"queue\":" + std::to_string(spans.dropped_queue.load()) +
+		        ",\"no_exporter\":" + std::to_string(spans.dropped_no_exporter.load()) +
+		        ",\"unsampled\":" + std::to_string(spans.unsampled.load()) + "}";
+		json += ",\"export_errors\":" + std::to_string(spans.export_errors.load());
+		auto last = spans.last_export_us.load();
+		json += ",\"last_export_us\":" + (last > 0 ? std::to_string(last) : string("null"));
+		auto last_error = lane->LastError();
+		json += ",\"last_error\":" + (last_error.empty() ? string("null") : JsonQuote(last_error)) + "}";
+	} else {
+		json += ",\"traces\":null";
 	}
 	json += "}";
 	return json;

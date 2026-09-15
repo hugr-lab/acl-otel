@@ -48,10 +48,13 @@ src/
   acl_otel_sink.cpp        # the sink (R1.5/R10.1): bounded queue, one worker, batches to an Exporter
   acl_otel_state.cpp       # per-instance state in the object cache: attach/detach, Reconfigure, status JSON
   acl_otel_otlp.cpp        # spec 002: event → LogRecord mapping, the SDK's HTTP/gRPC exporter, the quiet SDK log
+  acl_otel_traces.cpp      # spec 008 without the SDK: the trace mode, the traceparent parser, which event is a span
+  acl_otel_otlp_traces.cpp # spec 008: event → Span (the caller's trace, ours as a child), the SDK's trace exporters
   include/acl_otel.hpp     # the types above; acl_otel_otlp.hpp the exporter; acl_otel_extension.hpp the Extension
 test/sql/                  # sqllogictests; LOAD by build path (DONT_LINK loadable, invisible to `require`)
-test/cpp/                  # C++ tests (make test-cpp): rules + sink Makefile-compiled; the OTLP one is the CMake
-                           #   target acl_otel_test_otlp (it links the SDK) with fake receivers in-process
+test/cpp/                  # C++ tests (make test-cpp): rules + sink Makefile-compiled; the OTLP ones are CMake
+                           #   targets acl_otel_test_{otlp,metrics_otlp,traces_otlp} (they link the SDK) with fake
+                           #   receivers in-process; the traces one also runs the two-loadable span round trip under ACL_EXT
 deploy/                    # reference Collector configuration (otlp → azuremonitor)
 specs/                     # one spec per feature (specs/README.md); design/ is local research (gitignored)
 scripts/ci/                # smoke_load (the artifact LOADS), assert_ran (a suite that skipped is red), prune_vcpkg_cache
@@ -114,7 +117,13 @@ proves two loadables share a registry has proven nothing.
   doors a claim value leaves by - `acl_otel_claim_attributes` (logs) and `acl_otel_claim_dimension`
   (metrics) - and both are the operator's.
 - **Sampling never touches a refusal** (R6.1), and never the counters: it runs in `OnEvent` AFTER
-  the metrics accumulators have seen the event, so a rate stays exact while the records thin.
+  the metrics accumulators have seen the event, so a rate stays exact while the records thin. A
+  record and its span are sampled together: the span lane (spec 008) is fed after the sampler.
+- **A span is never a guess** (spec 008): only an event whose both ends the base measured becomes
+  one (`rewrite_us`, or `duration_us` behind `acl_otel_session_spans`); no trace id is ever made
+  from a `correlation_id`; the caller's `sampled` flag is obeyed, never upgraded; a refusal by
+  policy is `kUnset`, not an error. The lane's transport refuses a batch with an unmeasured event
+  rather than export a zero-length span.
 - **The extension never writes to the policy catalog and never calls a policy-changing `acl_*`
   function** (R9.3).
 - **A setting is read twice, or it is read wrong**: in its SET callback (so a change applies to what

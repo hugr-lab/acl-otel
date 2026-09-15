@@ -1,0 +1,17 @@
+# Tempo, the traces' store of the local stack (spec 008): OTLP/HTTP in from the Collector, a local
+# block store, and the query API Grafana reads on 3200. Nothing here is a deployment recipe.
+server:
+  http_listen_port: 3200
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal

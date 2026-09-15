@@ -66,6 +66,11 @@ void AclOtelMetricsFlushFunc(DataChunk &args, ExpressionState &state, Vector &re
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->FlushMetrics()), count_t(args.size()));
 }
 
+void AclOtelTracesFlushFunc(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &db = InstanceOf(state);
+	result.Reference(Value::BOOLEAN(OtelState::Of(db)->FlushTraces()), count_t(args.size()));
+}
+
 //! spec 007: create our own schema and table in the database the operator named. The one statement
 //! this extension ever writes with, and only when a person runs it.
 void AclOtelCreateRulesTableFunc(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -314,6 +319,34 @@ void LoadInternal(ExtensionLoader &loader) {
 		    OtelState::Of(*context.db)->SetHistogramSums(parameter.IsNull() || parameter.GetValue<bool>());
 	    },
 	    SetScope::GLOBAL);
+	// spec 008: the third signal, off by default (a third exporter nobody asked for is a surprise in
+	// somebody's bill). Both take effect at once on the running sink, and are read again at start.
+	config.AddExtensionOption(
+	    "acl_otel_traces",
+	    "acl_otel: which decisions become OTLP spans - 'off', 'linked' (only events carrying a usable "
+	    "traceparent, so the span always has a parent and an untraced node costs nothing) or 'all' (every "
+	    "recorded decision; without a parent it roots its own trace) (spec 008)",
+	    LogicalType::VARCHAR, Value("off"),
+	    [](ClientContext &context, SetScope scope, Value &parameter) {
+		    RequireGlobal("acl_otel_traces", scope);
+		    acl_otel::TraceMode mode;
+		    auto text = parameter.IsNull() ? string("off") : parameter.ToString();
+		    if (!acl_otel::ParseTraceMode(text, mode)) {
+			    throw InvalidInputException("acl_otel_traces accepts 'off', 'linked' or 'all', not '%s'", text);
+		    }
+		    OtelState::Of(*context.db)->ReconfigureTraces(*context.db, "acl_otel_traces", parameter);
+	    },
+	    SetScope::GLOBAL);
+	config.AddExtensionOption(
+	    "acl_otel_session_spans",
+	    "acl_otel: also a span per session, from open to close, under the trace the session's own "
+	    "record carries (spec 008); a span minutes long is noise under a request, so it is its own switch",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(false),
+	    [](ClientContext &context, SetScope scope, Value &parameter) {
+		    RequireGlobal("acl_otel_session_spans", scope);
+		    OtelState::Of(*context.db)->ReconfigureTraces(*context.db, "acl_otel_session_spans", parameter);
+	    },
+	    SetScope::GLOBAL);
 	// the opt-in series (R2.3): each takes effect at once, on the running scrape
 	auto series_setting = [&](const char *name, const char *description, const LogicalType &type, const Value &fallback,
 	                          set_option_callback_t callback) {
@@ -351,6 +384,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	register_scalar("acl_otel_flush", LogicalType::BOOLEAN, AclOtelFlushFunc);
 	// spec 003: export one metrics tick now, without waiting for the timer
 	register_scalar("acl_otel_metrics_flush", LogicalType::BOOLEAN, AclOtelMetricsFlushFunc);
+	// spec 008: export the queued spans now and wait for them (bounded); false while traces are off
+	register_scalar("acl_otel_traces_flush", LogicalType::BOOLEAN, AclOtelTracesFlushFunc);
 	// spec 006: what a readiness probe reads, without parsing the status
 	register_scalar("acl_otel_healthy", LogicalType::BOOLEAN, AclOtelHealthyFunc);
 	// spec 007: the central rules - read now, or create the table an operator will write them into

@@ -2,9 +2,9 @@
 
 OpenTelemetry for [duckdb-acl](https://github.com/hugr-lab/duckdb-acl)'s audit: a duckdb extension
 loaded beside `acl` on the same instance that turns the base's audit events and counters into OTel
-**logs** and **metrics**, decides the audit level **per role, per user and per door**, samples,
-and reports its own health. It contains no enforcement, changes no decision, and can never slow or
-stop one.
+**logs**, **metrics** and **traces**, decides the audit level **per role, per user and per door**,
+samples, and reports its own health. It contains no enforcement, changes no decision, and can never
+slow or stop one.
 
 It compiles against one header of the base, `acl_audit.hpp`, and reaches the base through duckdb's
 object cache (spec 069 of duckdb-acl). The contract it meets is
@@ -46,13 +46,23 @@ in the base; what is built so far is in [`specs/`](specs/README.md).
   `acl_otel_rules_interval` seconds on a connection of its own. A failed or malformed read leaves
   the rules in force and says so in the status; `acl_otel_level_rules` wins while it is set, for a
   node an operator is debugging.
-- Not yet: per-connection logging (004), which has one design decision open.
+- **Spec 008 (OTLP traces)**: a decision as a span, hung under the request that caused it. The
+  base measures its own cost (`rewrite_us`) and carries the caller's `traceparent`, so a span with
+  both ends known is built after the fact - the caller's trace id, the caller's span as the parent,
+  `acl SELECT` as long as the decision took, the verdict and the objects on it - and exported over
+  the same endpoint, on a lane of its own. Off by default; `linked` (recommended) costs nothing on
+  untraced traffic and is complete on traced traffic; `all` roots a trace for every decision. The
+  caller's sampling flag is obeyed, a refusal by policy is not an error, an event the base did not
+  measure never becomes a zero-length span, and no trace id is ever invented from a correlation id.
+- Per-connection logging (004) is the base's: `acl_sessions()` says the level in force and where it
+  came from (spec 069's addendum), and nothing here needs to add to it.
 
 ```sql
 LOAD acl;
 LOAD acl_otel;
 SET GLOBAL acl_otel_endpoint = 'http://otel-collector:4318';   -- /v1/logs is appended; 'host:4317' + protocol grpc
 SET GLOBAL acl_otel_level_rules = '[{"role": "analyst", "door": "flight", "level": "all"}, {"level": "denied"}]';
+SET GLOBAL acl_otel_traces = 'linked';                        -- spec 008: a span per traced decision
 SELECT acl_otel_status();
 SELECT acl_otel_flush();      -- export what is queued now and wait for it
 ```
@@ -65,11 +75,12 @@ denies every `acl_`-prefixed function to a principal, and every setting here ref
 
 | function | what it does |
 | --- | --- |
-| `acl_otel_status()` | one JSON document: attached, the transports, the queue, every counter, the metrics object, health, where the rules came from |
+| `acl_otel_status()` | one JSON document: attached, the transports, the queue, every counter, the metrics object, health, where the rules came from, the span lane |
 | `acl_otel_healthy()` | the readiness probe's boolean - see `acl_otel_strict` |
 | `acl_otel_start()` / `acl_otel_stop()` | attach to the base's registry, or detach and flush; idempotent, and the only way out (duckdb never unloads an extension) |
 | `acl_otel_flush()` | export the queued events now and wait for them, bounded |
 | `acl_otel_metrics_flush()` | export one metrics tick now |
+| `acl_otel_traces_flush()` | export the queued spans now and wait for them, bounded; false while traces are off |
 | `acl_otel_rules_refresh()` | read the central rules table now; answers how many rules are in force |
 | `acl_otel_create_rules_table()` | create that table, once, by hand, where `acl_otel_rules_table` points |
 | `acl_otel_version()` | the build |
@@ -94,6 +105,8 @@ denies every `acl_`-prefixed function to a principal, and every setting here ref
 | `acl_otel_claim_attributes` | `''` | the claims whose values may be exported, as `acl.claim.<name>`; at most 16 |
 | `acl_otel_sample_allowed` | `1` | the ratio of ALLOWED statements exported, or a JSON object per role; a refusal is never sampled |
 | `acl_otel_strict` / `_health_window` | `false` / `60` | report `acl_otel.healthy = 0` while events are being lost, and for how long after the last one |
+| `acl_otel_traces` | `off` | `linked` = a span for every decision carrying a usable `traceparent`, under the caller's span; `all` = every decision, rooting its own trace without one; `off` allocates nothing |
+| `acl_otel_session_spans` | `false` | also a span per session, from open to close, by how it ended |
 | `acl_otel_rules_table` / `_rules_interval` / `_max_rules` | `''` / `30` / `1000` | the table the level rules are read from, how often, and how many at most |
 
 A setting at its default means the standard environment decides, so a container configured the
