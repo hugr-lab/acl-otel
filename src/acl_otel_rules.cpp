@@ -59,12 +59,30 @@ vector<LevelRule> ParseLevelRules(const string &json) {
 		rule.subject = Any(Text(duckdb_yyjson::yyjson_obj_get(item, "subject")));
 		rule.issuer = Any(Text(duckdb_yyjson::yyjson_obj_get(item, "issuer")));
 		rule.door = Any(Text(duckdb_yyjson::yyjson_obj_get(item, "door")));
-		auto level = Text(duckdb_yyjson::yyjson_obj_get(item, "level"));
-		if (!acl::ParseAuditLevel(level, rule.level)) {
+		// a level, a profile (spec 009), or both; neither is a rule that decides nothing
+		auto *level_value = duckdb_yyjson::yyjson_obj_get(item, "level");
+		auto *profile_value = duckdb_yyjson::yyjson_obj_get(item, "profile");
+		auto level = Text(level_value);
+		auto profile = Text(profile_value);
+		rule.has_level = level_value != nullptr;
+		rule.has_profile = profile_value != nullptr;
+		if (!rule.has_level && !rule.has_profile) {
+			duckdb_yyjson::yyjson_doc_free(doc);
+			throw InvalidInputException("acl_otel_level_rules: rule %llu needs a level of off, denied, decisions or "
+			                            "all (or a profile of off, sampled or all), not \"%s\"",
+			                            position, level);
+		}
+		if (rule.has_level && !acl::ParseAuditLevel(level, rule.level)) {
 			duckdb_yyjson::yyjson_doc_free(doc);
 			throw InvalidInputException("acl_otel_level_rules: rule %llu needs a level of off, denied, decisions or "
 			                            "all, not \"%s\"",
 			                            position, level);
+		}
+		if (rule.has_profile && !acl::ParseProfileLevel(profile, rule.profile)) {
+			duckdb_yyjson::yyjson_doc_free(doc);
+			throw InvalidInputException(
+			    "acl_otel_level_rules: rule %llu needs a profile of off, sampled or all, not \"%s\"", position,
+			    profile);
 		}
 		// what a rule may name is closed: a key nobody reads is a typo that would silently match
 		// everything (a rule with `roles` instead of `role` is a catch-all)
@@ -75,10 +93,11 @@ vector<LevelRule> ParseLevelRules(const string &json) {
 			value = duckdb_yyjson::yyjson_obj_iter_get_val(key);
 			(void)value;
 			string name = duckdb_yyjson::yyjson_get_str(key);
-			if (name != "role" && name != "subject" && name != "issuer" && name != "door" && name != "level") {
+			if (name != "role" && name != "subject" && name != "issuer" && name != "door" && name != "level" &&
+			    name != "profile") {
 				duckdb_yyjson::yyjson_doc_free(doc);
 				throw InvalidInputException("acl_otel_level_rules: rule %llu has an unknown key \"%s\" (role, "
-				                            "subject, issuer, door, level)",
+				                            "subject, issuer, door, level, profile)",
 				                            position, name);
 			}
 		}
@@ -113,12 +132,23 @@ bool RuleMatches(const LevelRule &rule, const acl::Principal &principal, const s
 bool OtelPolicy::LevelFor(const acl::Principal &principal, const string &door, acl::AuditLevel &out) {
 	std::lock_guard<std::mutex> guard(lock);
 	for (auto &rule : rules) {
-		if (RuleMatches(rule, principal, door)) {
+		if (rule.has_level && RuleMatches(rule, principal, door)) {
 			out = rule.level;
 			return true;
 		}
 	}
 	return false; // no opinion: the instance's level applies (C6)
+}
+
+bool OtelPolicy::ProfileFor(const acl::Principal &principal, const string &door, acl::ProfileLevel &out) {
+	std::lock_guard<std::mutex> guard(lock);
+	for (auto &rule : rules) {
+		if (rule.has_profile && RuleMatches(rule, principal, door)) {
+			out = rule.profile;
+			return true;
+		}
+	}
+	return false; // no opinion: the operator's switch or the node's level applies (spec 074)
 }
 
 void OtelPolicy::SetRules(vector<LevelRule> rules_p) {
@@ -134,7 +164,7 @@ idx_t OtelPolicy::RuleCount() {
 //! spec 007: one row of the central table. NULL, '' and '*' all mean "any" - the same three ways of
 //! saying it that the JSON document accepts - and an unknown level names the row it came from.
 LevelRule RuleFromRow(const string &role, const string &subject, const string &issuer, const string &door,
-                      const string &level, int64_t seq) {
+                      const string &level, int64_t seq, const string &profile) {
 	auto any = [](const string &value) {
 		return value == "*" ? string() : value;
 	};
@@ -143,9 +173,24 @@ LevelRule RuleFromRow(const string &role, const string &subject, const string &i
 	rule.subject = any(subject);
 	rule.issuer = any(issuer);
 	rule.door = any(door);
+	// spec 009: the optional profile column - '' / NULL is no opinion about profiling; a row that
+	// carries one may leave the level empty
+	auto profile_text = profile;
+	StringUtil::Trim(profile_text);
+	if (!profile_text.empty()) {
+		if (!acl::ParseProfileLevel(profile_text, rule.profile)) {
+			throw InvalidInputException("the rules table: row %lld needs a profile of off, sampled or all, not '%s'",
+			                            seq, profile);
+		}
+		rule.has_profile = true;
+	}
 	auto text = level;
 	StringUtil::Trim(text);
 	text = StringUtil::Lower(text);
+	if (text.empty() && rule.has_profile) {
+		rule.has_level = false;
+		return rule;
+	}
 	if (text == "off") {
 		rule.level = acl::AuditLevel::OFF;
 	} else if (text == "denied") {

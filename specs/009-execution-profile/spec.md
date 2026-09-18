@@ -193,9 +193,21 @@ same lane with the same losses. `acl_otel.spans.*` (spec 006) is unchanged.
   to the 0.3 ms decision when a backend re-roots or the caller's span is gone. Derived ids cost
   nothing and are unique where a span id has to be.
 
+## Addendum (2026-09-18): the profile level as a rule
+
+The base's `SessionPolicy::ProfileFor(principal, door, out)` (spec 074) is answered by the same
+rules that answer `LevelFor`: a rule in `acl_otel_level_rules` may carry `profile` = `off` /
+`sampled` / `all` beside `level`, or instead of it; the central table (spec 007) carries it as an
+optional `profile` column. Each lookup walks the rules that carry the level it asks for, first
+match wins, so a rule about profiling never shadows one about the audit and the other way round.
+Where it lands: the base's precedence is the operator's `acl_session_profile` override, then this
+answer, then the connection's and the node's `acl_profile_level` - `acl_sessions()` says
+`profile_source = policy` when a rule decided. Tested in the rules test (both lookups over mixed
+rules, the row-to-rule mapping with the optional column), the central rules test (the column
+added, a row read, a bad profile naming its row) and beside acl (a profile rule profiles the
+analyst's statement while the node is off, and the base's listing says `policy`).
+
 ## Follow-ups
 
-- Per-session profile rules through `SessionPolicy::ProfileFor` (the hook exists in v2; the rule
-  table of spec 007 could carry a `profile` column the way it carries `level`).
 - The local stack: a Tempo query that shows the two spans, and a Grafana panel over
   `acl.exec.source.duration` by catalog.
