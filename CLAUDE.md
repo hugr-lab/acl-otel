@@ -8,8 +8,9 @@ against ONE header of the base (`acl_audit.hpp`, header-only) and reaches the ba
 object cache (`AuditHooks`, `GetOrCreate` by type string, either load order) — a loadable is
 dlopen'd RTLD_LOCAL, so nothing here ever resolves a symbol of acl's.
 
-Read **the contract first**: `duckdb-acl/specs/069-audit/extension-requirements.md` (C1–C8 promises,
-R1–R10 requirements, §5 decisions) and `duckdb-acl/src/include/acl_audit.hpp`. Then
+Read **the contract first**: duckdb-acl's `specs/069-audit/extension-requirements.md` (C1–C8 promises,
+R1–R10 requirements, §5 decisions) and `duckdb-ext-common/contracts/acl_audit.hpp` (+ `acl_principal.hpp`
+beside it - the shared repository's copy, the one the base compiles too; spec 010). Then
 [specs/001-architecture/spec.md](specs/001-architecture/spec.md) for how the requirements map onto
 specs here.
 
@@ -23,7 +24,8 @@ specs here.
   | Piece | Where | Pin |
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera` (the base's; `v2.0.0` when tagged) |
-  | duckdb-acl | submodule `duckdb-acl/` (HEADERS ONLY: `src/include/acl_audit.hpp` + what it includes) | `main` |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` (`contracts/acl_audit.hpp` + `acl_principal.hpp`; no submodules of its own) | a tag (`v0.1.0`) |
+  | duckdb-acl | **no submodule** since spec 010: the `ACL_BASE` file names the base commit whose CI artifact `fetch_base.sh` prefers for the beside-acl proof | a commit of `main` |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main` |
   | CI reusable workflows | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
 
@@ -64,7 +66,7 @@ scripts/ci/                # smoke_load (the artifact LOADS), assert_ran (a suit
 
 ```sh
 git submodule update --init --recursive
-make vcpkg-setup                                # once (or VCPKG_TOOLCHAIN_PATH=…/duckdb-acl/vcpkg/scripts/buildsystems/vcpkg.cmake)
+make vcpkg-setup                                # once (or VCPKG_TOOLCHAIN_PATH=…/duckdb-acl/vcpkg/scripts/buildsystems/vcpkg.cmake, a base checkout's)
 GEN=ninja make                                  # release build of duckdb + the extension
 build/release/test/unittest 'test/sql/*'        # the whole suite (the beside-acl file needs ACL_EXT)
 ACL_EXT=../duckdb-acl/build/release/extension/acl/acl.duckdb_extension build/release/test/unittest test/sql/acl_otel_beside_acl.test
@@ -96,13 +98,14 @@ proves two loadables share a registry has proven nothing.
   (the handler swallows what it does not keep).
 - **The contract is stamped** (C2a): `AuditHooks::Reach` is the only way to the registry; a refusal
   means do not attach (`attach_error` in the status, `acl_otel_start()` false). A bump of the base's
-  `CONTRACT_VERSION` is a submodule bump here the same day. `test_acl_otel_contract` (needs
-  `ACL_EXT`) is the two-loadable round trip the base cannot stage itself.
+  `CONTRACT_VERSION` is a re-pin of `duckdb-ext-common` here the same day (and an `ACL_BASE` bump to
+  the base commit that carries it). `test_acl_otel_contract` (needs `ACL_EXT`) is the two-loadable
+  round trip the base cannot stage itself.
 - **A red beside-acl step usually means the BASE moved.** CI fetches a green `main` artifact of
-  duckdb-acl, which may be ahead of the `duckdb-acl/` submodule pinned here: when the base bumps
+  duckdb-acl, which may be ahead of the base commit `ACL_BASE` names: when the base bumps
   `CONTRACT_VERSION`, our extension refuses to attach to its registry and the step goes red until
-  this repo bumps the submodule. That is the early warning working, not a flake - and the order to
-  merge in is base first, then here, the same day.
+  this repo re-pins `duckdb-ext-common` and bumps `ACL_BASE`. That is the early warning working, not
+  a flake - and the order to merge in is the shared repository, the base, then here, the same day.
 - **`fetch_base.sh` takes the artifact built against the duckdb WE pin**, not simply the newest
   green one: an extension loads only into the duckdb it was built against, and the base publishes
   its `duckdb` pin per commit, so each candidate run is checked before it is downloaded. The run of

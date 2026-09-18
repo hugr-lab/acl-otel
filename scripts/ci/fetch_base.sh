@@ -7,8 +7,9 @@
 # The run to take is NOT simply the newest green one: a duckdb extension loads only into the duckdb
 # it was built against, so the artifact has to be built against the duckdb THIS repo pins. The base
 # publishes that fact per commit (its `duckdb` submodule), so each candidate run is checked against
-# our own pin before it is downloaded. Newest first, and the commit our `duckdb-acl` submodule pins
-# is tried before all of them.
+# our own pin before it is downloaded. Newest first, and the commit the ACL_BASE file names (the
+# base commit whose artifact this repo prefers - what the `duckdb-acl` submodule used to say, spec
+# 010) is tried before all of them.
 #
 # A run built against another duckdb is skipped with the reason said out loud. If none matches, the
 # failure names both pins instead of surfacing later as "The file was built specifically for DuckDB
@@ -22,7 +23,7 @@ dest="${2:-base}"
 repo="hugr-lab/duckdb-acl"
 
 want_duckdb="$(git rev-parse HEAD:duckdb 2>/dev/null || true)"
-want_base="$(git rev-parse HEAD:duckdb-acl 2>/dev/null || true)"
+want_base="$(tr -d '[:space:]' < ACL_BASE 2>/dev/null || true)"
 test -n "$want_duckdb" || {
 	echo "fetch_base: cannot read the pinned duckdb commit - is this a checkout with submodules?" >&2
 	exit 1

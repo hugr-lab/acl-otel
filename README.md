@@ -135,7 +135,8 @@ A box that already has duckdb-acl's vcpkg checkout can point at it instead of a 
 reuse its binary cache (grpc, protobuf, abseil and curl are the same ports the Flight door builds).
 
 The pins ride duckdb-acl's: duckdb's 2.0 release branch `v2.0-cyanoptera`, extension-ci-tools
-`main`, the base's `main` for the contract header (`duckdb-acl/` submodule, headers only).
+`main`, and the contract header from the shared repository `duckdb-ext-common` (a tag; spec 010).
+`ACL_BASE` names the base commit whose CI artifact the beside-acl tests prefer.
 
 ## License
 

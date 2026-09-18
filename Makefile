@@ -34,7 +34,7 @@ TEST_CPP_FLAGS := -std=c++17 -O2 -DNDEBUG -pthread
 TEST_CPP_DIR := build/test
 TEST_CPP_BINS := $(patsubst test/cpp/%.cpp,$(TEST_CPP_DIR)/%,$(TEST_CPP_SOURCES))
 TEST_CPP_INCLUDES := -I duckdb/src/include -I duckdb/third_party/fmt/include -I src/include \
-	-I duckdb-acl/src/include -I duckdb/third_party/yyjson/include
+	-I duckdb-ext-common/contracts -I duckdb/third_party/yyjson/include
 ifeq ($(shell uname -s),Darwin)
 TEST_CPP_DUCKDB_LIB := build/release/src/libduckdb.dylib
 else

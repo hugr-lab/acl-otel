@@ -12,11 +12,12 @@ set(CMAKE_CXX_STANDARD
     CACHE STRING "C++ standard to enforce")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# the base's contract header (acl_audit.hpp, header-only) comes from the
-# duckdb-acl submodule - the extension compiles against it and links nothing of
-# acl's (a loadable is dlopen'd RTLD_LOCAL); the level rules are parsed with
-# duckdb's bundled yyjson
-include_directories(src/include duckdb-acl/src/include
+# the base's contract header (acl_audit.hpp + acl_principal.hpp, header-only)
+# comes from the shared repository duckdb-ext-common (spec 010; its contracts/
+# directory, the same header the base compiles) - the extension compiles
+# against it and links nothing of acl's (a loadable is dlopen'd RTLD_LOCAL); the
+# level rules are parsed with duckdb's bundled yyjson
+include_directories(src/include duckdb-ext-common/contracts
                     duckdb/third_party/yyjson/include)
 
 # the OpenTelemetry C++ SDK (spec 002): the OTLP exporters over HTTP/protobuf
