@@ -124,6 +124,15 @@ proves two loadables share a registry has proven nothing.
   from a `correlation_id`; the caller's `sampled` flag is obeyed, never upgraded; a refusal by
   policy is `kUnset`, not an error. The lane's transport refuses a batch with an unmeasured event
   rather than export a zero-length span.
+- **The execution profile** (spec 009, contract v2's `profile` event): the execution span
+  `[ts_us - exec_us, ts_us]`, `acl exec <CLASS>`, a sibling of the decision under the caller's span
+  and **linked** to it - span ids are DERIVED (`SpanIdFor(node, seq)`, `TraceIdFor` for an orphan's
+  own trace), never random, so the link needs no state; `acl.source` / `acl.operator` span events;
+  the record's body is the profile whole as JSON (the tree kept a tree; the SDK's body is an
+  `AttributeValue`, no nested map); five `acl.exec.*` histograms with `source` / `kind` labels (the
+  node is the resource); the sampler keeps a profile with its decision (by `decision_seq`), never
+  thins a failed one. `acl_otel_profile_plan` (the plan travels at all), `acl_otel_profile_spans`
+  (operators as child spans, labelled `cumulative_thread_time` - opt-in: not an interval).
 - **The extension never writes to the policy catalog and never calls a policy-changing `acl_*`
   function** (R9.3).
 - **A setting is read twice, or it is read wrong**: in its SET callback (so a change applies to what

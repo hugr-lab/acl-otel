@@ -44,3 +44,4 @@ specs are the shareable distillation of that work.
 | [006](006-self-metrics-health/spec.md) | the extension's own numbers, and a gauge an orchestrator can act on | implemented |
 | [007](007-central-rules/spec.md) | the level rules a fleet writes once, in a table every node reads | implemented |
 | [008](008-otlp-traces/spec.md) | OTLP traces - the decision as a span, hung under the request that caused it | implemented |
+| [009](009-execution-profile/spec.md) | the execution profile - the span everybody wanted, the sources as events, the tree as a record, the histograms | implemented |

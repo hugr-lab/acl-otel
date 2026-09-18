@@ -171,6 +171,32 @@ FROM (SELECT acl_otel_status() AS s);
 ----
 true	true
 
+# spec 009: once the base profiles what it runs, the profile reaches the sink (counted apart) and
+# the span lane is handed the execution beside the decision - two candidates for one statement
+statement ok
+SET GLOBAL acl_profile_level = 'all';
+
+statement ok
+ACL ROLE 'analyst' TRACE 'req-9' PARENT '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' SELECT count(*) FROM orders;
+
+statement ok
+SELECT acl_audit_flush();
+
+query I
+SELECT acl_otel_traces_flush();
+----
+true
+
+query II
+SELECT s LIKE '%"profile":{"plan":true,"spans":false,"events":1}%',
+       s LIKE '%"traces":{"mode":"linked"%"received":3,%'
+FROM (SELECT acl_otel_status() AS s);
+----
+true	true
+
+statement ok
+SET GLOBAL acl_profile_level = 'off';
+
 statement ok
 SET GLOBAL acl_otel_traces = 'off';
 

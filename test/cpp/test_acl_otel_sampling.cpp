@@ -46,6 +46,29 @@ string Refusal(const std::function<void()> &what) {
 int main() {
 	std::printf("test_acl_otel_sampling\n");
 	{
+		// spec 009: an execution is kept or thinned with its decision, never on its own
+		acl_otel::Sampler none("0");
+		auto profile = MakeEvent(50, "profile", true);
+		profile.decision_seq = 7;
+		Check(!none.Keep(profile), "at 0 a profile is thinned like the decision it belongs to");
+		auto failed = profile;
+		failed.error = true;
+		Check(none.Keep(failed), "a failed execution is never sampled away");
+		acl_otel::Sampler tenth("0.1");
+		int64_t agree = 0;
+		for (int64_t seq = 1; seq <= 2000; seq++) {
+			auto decision = MakeEvent(seq, "statement", true);
+			auto execution = MakeEvent(100000 + seq, "profile", true);
+			execution.decision_seq = seq;
+			agree += tenth.Keep(decision) == tenth.Keep(execution) ? 1 : 0;
+		}
+		Check(agree == 2000, "a profile is kept exactly when its decision is, whatever its own seq");
+		auto unlinked = MakeEvent(5, "profile", true);
+		unlinked.decision_seq = -1;
+		Check(tenth.Keep(unlinked) == tenth.Keep(MakeEvent(5, "statement", true)),
+		      "an unlinked profile is judged by its own seq");
+	}
+	{
 		acl_otel::Sampler everything("1");
 		Check(everything.KeepsEverything() && Kept(everything, 1000) == 1000, "'1' keeps every allowed statement");
 		acl_otel::Sampler none("0");

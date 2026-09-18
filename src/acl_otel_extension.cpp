@@ -126,12 +126,15 @@ enum class TransportSetting : uint8_t {
 	CERTIFICATE,
 	RESOURCE_ATTRIBUTES,
 	SERVICE_NAME,
-	CLAIM_ATTRIBUTES
+	CLAIM_ATTRIBUTES,
+	PROFILE_PLAN,
+	PROFILE_SPANS
 };
 const char *const TRANSPORT_SETTING_NAMES[] = {"acl_otel_endpoint",     "acl_otel_protocol",
                                                "acl_otel_timeout",      "acl_otel_insecure",
                                                "acl_otel_certificate",  "acl_otel_resource_attributes",
-                                               "acl_otel_service_name", "acl_otel_claim_attributes"};
+                                               "acl_otel_service_name", "acl_otel_claim_attributes",
+                                               "acl_otel_profile_plan", "acl_otel_profile_spans"};
 
 template <TransportSetting SETTING>
 void TransportSet(ClientContext &context, SetScope scope, Value &parameter) {
@@ -337,6 +340,18 @@ void LoadInternal(ExtensionLoader &loader) {
 		    OtelState::Of(*context.db)->ReconfigureTraces(*context.db, "acl_otel_traces", parameter);
 	    },
 	    SetScope::GLOBAL);
+	// spec 009: the execution profile's two knobs - both transport settings (the record's body and
+	// the span's events/children are built by the exporters, rebuilt at the SET)
+	config.AddExtensionOption(
+	    "acl_otel_profile_plan",
+	    "acl_otel: whether a profile's plan travels - in the record's body and as acl.operator span events "
+	    "(spec 009); false keeps the per-source rollup and drops the plan, the volume knob",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(true), TransportSet<TransportSetting::PROFILE_PLAN>, SetScope::GLOBAL);
+	config.AddExtensionOption("acl_otel_profile_spans",
+	                          "acl_otel: the plan as child spans of the execution span, one per operator, labelled "
+	                          "cumulative_thread_time (spec 009) - opt-in: that number is not an interval",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(false),
+	                          TransportSet<TransportSetting::PROFILE_SPANS>, SetScope::GLOBAL);
 	config.AddExtensionOption(
 	    "acl_otel_session_spans",
 	    "acl_otel: also a span per session, from open to close, under the trace the session's own "

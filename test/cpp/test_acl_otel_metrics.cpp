@@ -106,7 +106,12 @@ int main() {
 	}
 	{
 		auto histograms = acl_otel::DefaultHistograms();
-		Check(histograms.size() == 3, "three instruments by default (R2.2)");
+		Check(histograms.size() == 8, "eight instruments by default: three of R2.2, five of spec 009");
+		Check(histograms[3].name == "acl.exec.duration" && histograms[4].name == "acl.exec.source.duration" &&
+		          histograms[5].name == "acl.exec.source.rows" &&
+		          histograms[6].name == "acl.exec.source.pushdown_filters" &&
+		          histograms[7].name == "acl.exec.peak_memory" && histograms[7].unit == "By",
+		      "the execution's five, named for what they measure");
 		acl_otel::ApplyBucketDocument(histograms, "");
 		Check(histograms[0].bounds.size() == 9, "an empty document leaves the defaults alone");
 		acl_otel::ApplyBucketDocument(histograms, R"({"acl.ingest.rows": [10, 100, 1000]})");
@@ -212,6 +217,20 @@ int main() {
 		closed.door = "flight";
 		closed.detail = "idle";
 		metrics.Observe(closed);
+		// spec 009: one execution with one source shapes the execution's instruments
+		auto profile = MakeEvent("profile", true);
+		profile.statement = "select";
+		profile.door = "flight";
+		profile.exec_us = 4000;
+		profile.peak_memory = 4096;
+		acl::AuditSource pg;
+		pg.source = "pg";
+		pg.kind = "postgres_scan";
+		pg.rows = 5;
+		pg.timing_us = 3500;
+		pg.filters = 2;
+		profile.sources.push_back(pg);
+		metrics.Observe(profile);
 		Check(metrics.TickNow(hooks), "the tick was taken by the transport");
 		auto &snapshot = recording->last;
 		int64_t decisions = 0, sessions_live = 0, by_role = 0;
@@ -232,8 +251,9 @@ int main() {
 		Check(decisions == 2 && decisions_monotonic, "the base's counter, by its own name, as a monotonic sum");
 		Check(sessions_live == 7 && !gauge_monotonic, "the base's gauge, read at snapshot time, as a gauge");
 		Check(by_role == 1, "the opt-in series is exported beside them");
-		int64_t rewrite_count = 0, session_count = 0;
-		double session_value = 0;
+		int64_t rewrite_count = 0, session_count = 0, exec_count = 0, source_filters = -1;
+		double session_value = 0, source_rows = 0, source_us = 0, exec_us = 0;
+		string source_label, exec_result;
 		for (auto &histogram : snapshot.histograms) {
 			for (auto &point : histogram.points) {
 				if (histogram.name == "acl.rewrite.duration") {
@@ -243,8 +263,34 @@ int main() {
 					session_count += point.second.count;
 					session_value = point.second.sum;
 				}
+				if (histogram.name == "acl.exec.duration") {
+					exec_count += point.second.count;
+					exec_us = point.second.sum;
+					for (auto &label : point.first) {
+						if (label.first == "result") {
+							exec_result = label.second;
+						}
+					}
+				}
+				if (histogram.name == "acl.exec.source.rows") {
+					source_rows = point.second.sum;
+					for (auto &label : point.first) {
+						if (label.first == "source") {
+							source_label = label.second;
+						}
+					}
+				}
+				if (histogram.name == "acl.exec.source.duration") {
+					source_us = point.second.sum;
+				}
+				if (histogram.name == "acl.exec.source.pushdown_filters") {
+					source_filters = static_cast<int64_t>(point.second.sum);
+				}
 			}
 		}
+		Check(exec_count == 1 && exec_us == 4000 && exec_result == "ok", "the execution histogram saw the profile");
+		Check(source_label == "pg" && source_rows == 5 && source_us == 3500 && source_filters == 2,
+		      "the per-source instruments, labelled by the source, saw its rows, time and pushdown");
 		Check(rewrite_count == 1, "the rewrite histogram saw the statement");
 		Check(session_count == 1 && session_value == 90, "the session histogram counts seconds, not microseconds");
 		Check(snapshot.start_us > 0 && snapshot.now_us >= snapshot.start_us, "the snapshot carries its window");

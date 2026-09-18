@@ -245,6 +245,43 @@ void CheckMapping(Capture &capture, const std::string &transport) {
 	Check(capture.At(4).attributes["acl.rows"] == "10000", transport + ": an ingest carries its rows");
 }
 
+//! spec 009: an execution's profile as the base emits it
+acl::AuditEvent ProfileEvent() {
+	auto e = Base(9, "profile", true);
+	e.statement = "select";
+	e.door = "flight";
+	e.decision_seq = 1;
+	e.exec_us = 4000;
+	e.cpu_us = 6000;
+	e.rows_scanned = 1000;
+	e.rows_out = 5;
+	e.peak_memory = 4096;
+	acl::AuditSource pg;
+	pg.source = "pg";
+	pg.kind = "postgres_scan";
+	pg.scans = 1;
+	pg.rows = 5;
+	pg.timing_us = 3500;
+	pg.filters = 2;
+	e.sources.push_back(pg);
+	acl::AuditPlanNode root;
+	root.id = 0;
+	root.parent = -1;
+	root.type = "RESULT_COLLECTOR";
+	e.plan.push_back(root);
+	acl::AuditPlanNode scan;
+	scan.id = 1;
+	scan.parent = 0;
+	scan.depth = 1;
+	scan.type = "TABLE_SCAN";
+	scan.kind = "postgres_scan";
+	scan.source = "pg";
+	scan.rows = 5;
+	scan.timing_us = 3500;
+	e.plan.push_back(scan);
+	return e;
+}
+
 acl_otel::OtlpConfig Config(const std::string &endpoint, const std::string &protocol) {
 	acl_otel::OtlpConfig config;
 	config.endpoint = endpoint;
@@ -292,6 +329,47 @@ int main() {
 		          receiver.capture.headers["x-tenant"] == "acme",
 		      "http: the headers reached the receiver");
 		unsetenv("OTEL_EXPORTER_OTLP_HEADERS");
+	}
+	{
+		// spec 009: the execution's record - the profile whole as the body (the tree kept a tree), the
+		// numbers as attributes, ok/error as its words, and the plan only in the body
+		HttpReceiver receiver;
+		acl_otel::OtlpExporter exporter(Config("http://127.0.0.1:" + std::to_string(receiver.port), "http/protobuf"));
+		string error;
+		auto failed = ProfileEvent();
+		failed.seq = 10;
+		failed.error = true;
+		failed.allowed = false;
+		failed.detail = "Conversion";
+		Check(exporter.Export({ProfileEvent(), failed}, error), "profile: exported (" + error + ")");
+		auto record = receiver.capture.At(0);
+		Check(record.severity == 9 && record.body.rfind("{\"statement\":\"select\",\"result\":\"ok\"", 0) == 0 &&
+		          record.body.find("\"decision_seq\":1,\"exec_us\":4000") != string::npos &&
+		          record.body.find("\"sources\":[{\"source\":\"pg\",\"kind\":\"postgres_scan\"") != string::npos &&
+		          record.body.find("\"plan\":[{\"id\":0,\"parent\":-1") != string::npos &&
+		          record.body.find("\"type\":\"TABLE_SCAN\"") != string::npos,
+		      "INFO, and the body is the profile document with its sources and its plan: " + record.body);
+		Check(record.attributes["acl.verdict"] == "ok" && record.attributes["acl.exec.us"] == "4000" &&
+		          record.attributes["acl.decision_seq"] == "1" && record.attributes["acl.exec.rows_out"] == "5" &&
+		          record.attributes["acl.exec.sources"].find("\"filters\":2") != string::npos &&
+		          record.attributes.count("acl.exec.plan") == 0 && record.attributes.count("acl.rewrite_us") == 0,
+		      "the execution's numbers as attributes, the rollup as a list, the plan never as an attribute");
+		auto broken = receiver.capture.At(1);
+		Check(broken.severity == 13 && broken.attributes["acl.verdict"] == "error" &&
+		          broken.body.find("\"result\":\"error\",\"error_class\":\"Conversion\"") != string::npos,
+		      "a failed execution is WARN with its class: " + broken.body);
+	}
+	{
+		// spec 009: the plan is the volume knob of the record too
+		HttpReceiver receiver;
+		auto config = Config("http://127.0.0.1:" + std::to_string(receiver.port), "http/protobuf");
+		config.profile_plan = false;
+		acl_otel::OtlpExporter exporter(config);
+		string error;
+		Check(exporter.Export({ProfileEvent()}, error), "plan off: exported (" + error + ")");
+		auto record = receiver.capture.At(0);
+		Check(record.body.find("\"plan\"") == string::npos && record.body.find("\"sources\":[{") != string::npos,
+		      "with the plan off the body keeps the sources and drops the plan");
 	}
 	{
 		GrpcReceiver receiver;

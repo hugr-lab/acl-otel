@@ -243,6 +243,8 @@ OtlpConfig OtlpConfig::From(DatabaseInstance &db) {
 	config.service_name = SettingString(db, "acl_otel_service_name", "duckdb-acl");
 	config.resource_attributes = SettingString(db, "acl_otel_resource_attributes", "");
 	config.claim_attributes = ParseClaimAttributes(SettingString(db, "acl_otel_claim_attributes", ""));
+	config.profile_plan = SettingBool(db, "acl_otel_profile_plan", true);
+	config.profile_spans = SettingBool(db, "acl_otel_profile_spans", false);
 	// the node id is the base's (spec 069) when acl is loaded; else the same shape, ours
 	config.instance_id = SettingString(db, "acl_node_id", "");
 	if (config.instance_id.empty()) {
@@ -272,7 +274,10 @@ OtelSeverity SeverityOf(const acl::AuditEvent &event) {
 	return OtelSeverity::WARN;
 }
 
-string BodyOf(const acl::AuditEvent &event) {
+string BodyOf(const acl::AuditEvent &event, bool profile_plan) {
+	if (event.kind == "profile") {
+		return ProfileJson(event, profile_plan); // spec 009: the profile whole, the tree kept a tree
+	}
 	string body = event.kind + (event.allowed ? " allowed" : " denied");
 	if (!event.reason.empty()) {
 		body += ": " + event.reason;
@@ -322,6 +327,74 @@ string ObjectsJson(const acl::AuditEvent &event) {
 	return CloseList(json, skipped);
 }
 
+//! spec 009: the numbers of one source or one operator as JSON members, the same names the base's
+//! ring uses, so a reader of the ring and a reader of the record see one vocabulary
+string SourceMembers(const acl::AuditSource &s) {
+	return "\"source\":" + JsonQuote(s.source) + ",\"kind\":" + JsonQuote(s.kind) +
+	       ",\"scans\":" + std::to_string(s.scans) + ",\"rows\":" + std::to_string(s.rows) +
+	       ",\"rows_scanned\":" + std::to_string(s.rows_scanned) + ",\"timing_us\":" + std::to_string(s.timing_us) +
+	       ",\"bytes\":" + std::to_string(s.bytes) + ",\"filters\":" + std::to_string(s.filters) +
+	       ",\"projections\":" + std::to_string(s.projections) +
+	       ",\"dynamic_filters\":" + (s.dynamic_filters ? "true" : "false");
+}
+
+string PlanNodeMembers(const acl::AuditPlanNode &n) {
+	return "\"id\":" + std::to_string(n.id) + ",\"parent\":" + std::to_string(n.parent) +
+	       ",\"depth\":" + std::to_string(n.depth) + ",\"type\":" + JsonQuote(n.type) +
+	       ",\"kind\":" + JsonQuote(n.kind) + ",\"source\":" + JsonQuote(n.source) +
+	       ",\"rows\":" + std::to_string(n.rows) + ",\"rows_scanned\":" + std::to_string(n.rows_scanned) +
+	       ",\"timing_us\":" + std::to_string(n.timing_us) + ",\"bytes\":" + std::to_string(n.bytes) +
+	       ",\"peak_memory_observed\":" + std::to_string(n.peak_memory_observed) +
+	       ",\"filters\":" + std::to_string(n.filters) + ",\"projections\":" + std::to_string(n.projections) +
+	       ",\"dynamic_filters\":" + (n.dynamic_filters ? "true" : "false");
+}
+
+string SourcesJson(const acl::AuditEvent &event) {
+	string json = "[";
+	idx_t skipped = 0;
+	for (idx_t i = 0; i < event.sources.size(); i++) {
+		auto item = "{" + SourceMembers(event.sources[i]) + "}";
+		if (json.size() + item.size() + 32 > LIST_ATTRIBUTE_LIMIT) {
+			skipped = event.sources.size() - i;
+			break;
+		}
+		json += string(json.size() > 1 ? "," : "") + item;
+	}
+	return CloseList(json, skipped);
+}
+
+string PlanJson(const acl::AuditEvent &event) {
+	string json = "[";
+	for (idx_t i = 0; i < event.plan.size(); i++) {
+		json += string(i ? "," : "") + "{" + PlanNodeMembers(event.plan[i]) + "}";
+	}
+	return json + "]";
+}
+
+string ProfileJson(const acl::AuditEvent &event, bool plan) {
+	auto number = [](const char *name, int64_t value) {
+		return string(",\"") + name + "\":" + (value >= 0 ? std::to_string(value) : string("null"));
+	};
+	string json = "{\"statement\":" + JsonQuote(event.statement) +
+	              ",\"result\":" + JsonQuote(event.error ? "error" : "ok") +
+	              ",\"error_class\":" + JsonQuote(event.detail);
+	json += number("decision_seq", event.decision_seq) + number("exec_us", event.exec_us) +
+	        number("cpu_us", event.cpu_us) + number("rows_scanned", event.rows_scanned) +
+	        number("rows_out", event.rows_out) + number("bytes_read", event.bytes_read) +
+	        number("bytes_written", event.bytes_written) + number("peak_memory", event.peak_memory) +
+	        number("memory_allocated", event.memory_allocated) + number("blocked_us", event.blocked_us);
+	json += string(",\"truncated\":") + (event.truncated ? "true" : "false");
+	json += ",\"sources\":[";
+	for (idx_t i = 0; i < event.sources.size(); i++) {
+		json += string(i ? "," : "") + "{" + SourceMembers(event.sources[i]) + "}";
+	}
+	json += "]";
+	if (plan) {
+		json += ",\"plan\":" + PlanJson(event);
+	}
+	return json + "}";
+}
+
 void FillAttributes(const acl::AuditEvent &event, const vector<string> &claims,
                     const std::function<void(const char *, const opentelemetry::common::AttributeValue &)> &set) {
 	// R1.1: every field an `acl.` attribute, present only when the event carries it. The values are
@@ -337,9 +410,10 @@ void FillAttributes(const acl::AuditEvent &event, const vector<string> &claims,
 			set(key, opentelemetry::common::AttributeValue(value));
 		}
 	};
+	bool profile = event.kind == "profile"; // spec 009: an execution's words are ok / error
 	text("acl.kind", event.kind);
 	text("acl.statement", event.statement);
-	text("acl.verdict", event.allowed ? "allowed" : "denied");
+	text("acl.verdict", profile ? (event.error ? "error" : "ok") : (event.allowed ? "allowed" : "denied"));
 	text("acl.reason_code", event.reason_code);
 	text("acl.reason", event.reason);
 	text("acl.door", event.door);
@@ -357,6 +431,24 @@ void FillAttributes(const acl::AuditEvent &event, const vector<string> &claims,
 	number("acl.rows", event.rows);
 	number("acl.duration_us", event.duration_us);
 	text("acl.detail", event.detail);
+	if (profile) {
+		// spec 009: the execution's own numbers, what a query filters on; the rollup as a list; the
+		// plan never as an attribute (the record's body carries it, an attribute would be cut)
+		number("acl.decision_seq", event.decision_seq);
+		number("acl.exec.us", event.exec_us);
+		number("acl.exec.cpu_us", event.cpu_us);
+		number("acl.exec.rows_scanned", event.rows_scanned);
+		number("acl.exec.rows_out", event.rows_out);
+		number("acl.exec.bytes_read", event.bytes_read);
+		number("acl.exec.bytes_written", event.bytes_written);
+		number("acl.exec.peak_memory", event.peak_memory);
+		number("acl.exec.memory_allocated", event.memory_allocated);
+		number("acl.exec.blocked_us", event.blocked_us);
+		text("acl.exec.truncated", event.truncated ? "true" : "false");
+		if (!event.sources.empty()) {
+			text("acl.exec.sources", SourcesJson(event));
+		}
+	}
 	// R5.1: a claim value is exported only when the operator named its claim, and nothing else in
 	// principal.claims ever reaches a record
 	for (auto &name : claims) {
@@ -370,7 +462,8 @@ void FillAttributes(const acl::AuditEvent &event, const vector<string> &claims,
 	text("acl.node", event.node);
 }
 
-void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &event, const vector<string> &claims) {
+void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &event, const vector<string> &claims,
+                        bool profile_plan) {
 	using opentelemetry::common::SystemTimestamp;
 	record.SetTimestamp(SystemTimestamp(std::chrono::microseconds(event.ts_us)));
 	record.SetObservedTimestamp(SystemTimestamp(std::chrono::system_clock::now()));
@@ -384,7 +477,7 @@ void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &even
 	default:
 		record.SetSeverity(opentelemetry::logs::Severity::kError);
 	}
-	auto body = BodyOf(event);
+	auto body = BodyOf(event, profile_plan);
 	record.SetBody(opentelemetry::common::AttributeValue(opentelemetry::nostd::string_view(body)));
 	// R1.2: the trace context, or nothing - a malformed value sets neither and is not exported
 	uint8_t trace_id[16], span_id[8], flags = 0;
@@ -463,7 +556,7 @@ bool OtlpExporter::Export(const vector<acl::AuditEvent> &batch, string &error) {
 		auto record = exporter->MakeRecordable();
 		record->SetResource(*resource);
 		record->SetInstrumentationScope(*scope);
-		Fill(*record, event, config.claim_attributes);
+		Fill(*record, event, config.claim_attributes, config.profile_plan);
 		records.push_back(std::move(record));
 	}
 	SdkLog().Take(); // what the SDK says about THIS export, not an earlier one

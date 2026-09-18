@@ -63,6 +63,8 @@ public:
 
 	//! false = this event is sampled away. Only an `allowed` STATEMENT is eligible; a refusal, an
 	//! admin decision, a session, a door, an ingest, a policy or a keys event always passes (R6.1).
+	//! spec 009: a `profile` is judged by its decision's seq, so the execution and the decision are
+	//! kept or thinned as one statement; a failed execution always passes, as a refusal does.
 	bool Keep(const acl::AuditEvent &event) const;
 	//! the ratio this principal's roles earn, for the status
 	double RatioFor(const vector<string> &roles) const;
@@ -147,15 +149,22 @@ const char *TraceModeName(TraceMode mode);
 //! id included (invalid by the specification). Shared by the record (R1.2) and the span (spec 008).
 bool ParseTraceparent(const string &traceparent, uint8_t trace_id[16], uint8_t span_id[8], uint8_t &flags);
 //! spec 008: is this event one a span can honestly be built from, under `mode`? Both ends must be
-//! known - a decision's `rewrite_us`, or a session close's `duration_us` when `session_spans` is on;
-//! nothing else ever becomes a span, because a zero-length span reads as "instant", a claim the base
-//! never made. Under `linked` the caller's traceparent must be there and parse. `unsampled` is set
-//! when the event would have qualified but the caller's flags say the trace is not recorded: not a
-//! span, and the caller counts it as such. O(1): the traceparent is 55 characters.
+//! known - a decision's `rewrite_us`, a session close's `duration_us` when `session_spans` is on, or
+//! an execution's `exec_us` (spec 009, a `profile`); nothing else ever becomes a span, because a
+//! zero-length span reads as "instant", a claim the base never made. Under `linked` the caller's traceparent must be
+//! there and parse. `unsampled` is set when the event would have qualified but the caller's flags say the trace is not
+//! recorded: not a span, and the caller counts it as such. O(1): the traceparent is 55 characters.
 bool SpanCandidate(const acl::AuditEvent &event, TraceMode mode, bool session_spans, bool &unsampled);
 //! the span's length in microseconds - `rewrite_us` for a decision, `duration_us` for a session
-//! close - or -1 when the base measured neither
+//! close, `exec_us` for an execution (spec 009) - or -1 when the base measured none
 int64_t SpanDurationUs(const acl::AuditEvent &event);
+//! spec 009: a span id both sides can compute - the decision span's, so the execution span can link
+//! to `SpanIdFor(node, decision_seq)` without having seen the decision - a 64-bit mix of the node id
+//! and the event's seq, unique within a node's run (where a span id is judged), never all zero.
+//! `salt` separates the spans one event yields (an operator child span, spec 009).
+void SpanIdFor(const string &node, int64_t seq, uint8_t out[8], int64_t salt = 0);
+//! ... and the trace an orphan decision roots under `all`, so its execution lands in it
+void TraceIdFor(const string &node, int64_t seq, uint8_t out[16]);
 
 //! A bounded queue and the one worker that drains it into an Exporter, batch by batch (R1.5,
 //! R10.1): Push copies the event and returns - no I/O, no wait; a full queue drops and counts.
@@ -250,6 +259,8 @@ public:
 	void Stop();
 	//! the records' numbers (R7), the same object as Records().stats
 	Stats &stats {records.stats};
+	//! spec 009: how many `profile` events the base handed this sink, whatever became of them
+	std::atomic<int64_t> profiles_received {0};
 
 private:
 	std::mutex lock;

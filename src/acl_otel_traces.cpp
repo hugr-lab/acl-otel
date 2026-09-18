@@ -100,7 +100,48 @@ int64_t SpanDurationUs(const acl::AuditEvent &event) {
 	if (event.kind == "session") {
 		return event.duration_us; // set on the close event only; the open carries -1
 	}
+	if (event.kind == "profile") {
+		return event.exec_us; // spec 009: the execution's begin to its end, the base's own stamps
+	}
 	return -1; // an ingest, a door, a policy or a keys event has one end, and stays a log record
+}
+
+namespace {
+
+//! splitmix64's finaliser over a running state: cheap, well mixed, and the same on every node
+uint64_t Mix(uint64_t state) {
+	state += 0x9E3779B97F4A7C15ULL;
+	state = (state ^ (state >> 30)) * 0xBF58476D1CE4E5B9ULL;
+	state = (state ^ (state >> 27)) * 0x94D049BB133111EBULL;
+	return state ^ (state >> 31);
+}
+
+uint64_t DerivedWord(const string &node, int64_t seq, int64_t salt, uint64_t lane) {
+	uint64_t state = lane;
+	for (unsigned char c : node) {
+		state = Mix(state ^ c);
+	}
+	state = Mix(state ^ static_cast<uint64_t>(seq));
+	state = Mix(state ^ (static_cast<uint64_t>(salt) << 1));
+	return state == 0 ? 1 : state; // an all-zero id is invalid by the specification
+}
+
+} // namespace
+
+void SpanIdFor(const string &node, int64_t seq, uint8_t out[8], int64_t salt) {
+	auto word = DerivedWord(node, seq, salt, 0x5350414E00000000ULL); // "SPAN"
+	for (int i = 0; i < 8; i++) {
+		out[i] = static_cast<uint8_t>(word >> (8 * i));
+	}
+}
+
+void TraceIdFor(const string &node, int64_t seq, uint8_t out[16]) {
+	auto low = DerivedWord(node, seq, 0, 0x5452414345000000ULL); // "TRACE"
+	auto high = DerivedWord(node, seq, 1, 0x5452414345000000ULL);
+	for (int i = 0; i < 8; i++) {
+		out[i] = static_cast<uint8_t>(low >> (8 * i));
+		out[8 + i] = static_cast<uint8_t>(high >> (8 * i));
+	}
 }
 
 bool SpanCandidate(const acl::AuditEvent &event, TraceMode mode, bool session_spans, bool &unsampled) {

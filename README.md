@@ -63,6 +63,8 @@ LOAD acl_otel;
 SET GLOBAL acl_otel_endpoint = 'http://otel-collector:4318';   -- /v1/logs is appended; 'host:4317' + protocol grpc
 SET GLOBAL acl_otel_level_rules = '[{"role": "analyst", "door": "flight", "level": "all"}, {"level": "denied"}]';
 SET GLOBAL acl_otel_traces = 'linked';                        -- spec 008: a span per traced decision
+SET GLOBAL acl_profile_level = 'all';                         -- the base (spec 074): profile what runs; spec 009 makes
+                                                              --   it the execution span, a record with the tree, histograms
 SELECT acl_otel_status();
 SELECT acl_otel_flush();      -- export what is queued now and wait for it
 ```
@@ -107,6 +109,7 @@ denies every `acl_`-prefixed function to a principal, and every setting here ref
 | `acl_otel_strict` / `_health_window` | `false` / `60` | report `acl_otel.healthy = 0` while events are being lost, and for how long after the last one |
 | `acl_otel_traces` | `off` | `linked` = a span for every decision carrying a usable `traceparent`, under the caller's span; `all` = every decision, rooting its own trace without one; `off` allocates nothing |
 | `acl_otel_session_spans` | `false` | also a span per session, from open to close, by how it ended |
+| `acl_otel_profile_plan` / `_profile_spans` | `true` / `false` | spec 009, once the base profiles (`acl_profile_level`): whether a profile's plan travels (the record's body, the `acl.operator` span events), and the plan as child spans of the execution span, labelled cumulative thread time |
 | `acl_otel_rules_table` / `_rules_interval` / `_max_rules` | `''` / `30` / `1000` | the table the level rules are read from, how often, and how many at most |
 
 A setting at its default means the standard environment decides, so a container configured the
