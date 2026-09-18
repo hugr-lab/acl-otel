@@ -42,6 +42,12 @@ struct OtlpConfig {
 	//! spec 005 (R5.1): the claim names whose values may be exported, as `acl.claim.<name>`. Empty
 	//! - the default - exports none: a claim value leaves the node only when an operator names it.
 	vector<string> claim_attributes;
+	//! spec 009: whether a profile's plan travels (the record's body, the `acl.operator` span
+	//! events) - the volume knob of a node that profiles every statement; the rollup always does
+	bool profile_plan = true;
+	//! spec 009: the plan as child spans of the execution span, one per operator, labelled
+	//! cumulative_thread_time - opt-in, because that number is not an interval
+	bool profile_spans = false;
 	string duckdb_version;
 	string acl_otel_version;
 	//! from the settings (through the instance) and the base's acl_node_id when acl is loaded
@@ -73,11 +79,18 @@ string ClaimValue(const string &value);
 //! severity per R1.1: INFO allowed, WARN denied, ERROR when the source of the decision failed
 enum class OtelSeverity : uint8_t { INFO, WARN, ERROR };
 OtelSeverity SeverityOf(const acl::AuditEvent &event);
-//! the body: `<kind> <allowed|denied>` + `: <reason>`
-string BodyOf(const acl::AuditEvent &event);
+//! the body: `<kind> <allowed|denied>` + `: <reason>`; for a profile (spec 009) the profile whole
+//! as one JSON document - the scalars, `sources`, and `plan` when `profile_plan` - the tree kept
+//! a tree in the one signal that keeps a document
+string BodyOf(const acl::AuditEvent &event, bool profile_plan = true);
 //! `acl.roles` and `acl.objects` as JSON strings - flat attributes, never nested (R1.6)
 string RolesJson(const acl::AuditEvent &event);
 string ObjectsJson(const acl::AuditEvent &event);
+//! spec 009: the rollup per source as a JSON list, bounded like the lists above (an attribute); the
+//! plan as a JSON list (the body only: a 256-node plan is past what a customDimension survives)
+string SourcesJson(const acl::AuditEvent &event);
+string PlanJson(const acl::AuditEvent &event);
+string ProfileJson(const acl::AuditEvent &event, bool plan);
 //! R1.1's attributes, shared by the record (spec 002) and the span (spec 008): every field an `acl.`
 //! attribute, present only when the event carries it, and a claim value only when `claims` names
 //! its claim (R5.1) - everything else in principal.claims is dropped here. `set` receives each.
@@ -97,7 +110,7 @@ public:
 	//! `claims` names the claims whose values may be exported (spec 005, R5.1); every other claim
 	//! the event carries in memory is dropped here.
 	static void Fill(opentelemetry::sdk::logs::Recordable &record, const acl::AuditEvent &event,
-	                 const vector<string> &claims);
+	                 const vector<string> &claims, bool profile_plan = true);
 
 private:
 	OtlpConfig config;
@@ -110,20 +123,29 @@ private:
 
 //! spec 008: who a span is. From the caller's traceparent when the event carries a usable one - its
 //! trace id, its span id as our parent, its flags - else a trace of our own, rooted and sampled.
-//! Our own span id is fresh either way: unique, not unguessable, so the ordinary generator.
+//! Our own span id is DERIVED (spec 009): `SpanIdFor(node, seq)`, so an execution span can link to
+//! its decision's id - `SpanIdFor(node, decision_seq)` - without having seen the decision; an
+//! orphan's own trace is `TraceIdFor(node, seq)` for the same reason. An execution with no caller's
+//! trace hangs under its decision, in the trace the decision rooted.
 struct SpanIdentity {
 	uint8_t trace_id[16] = {};
 	uint8_t span_id[8] = {};
 	uint8_t parent_span_id[8] = {};
 	bool has_parent = false;
 	uint8_t flags = 0x01;
+	//! spec 009: the execution span's link to its decision span
+	bool has_link = false;
+	uint8_t link_trace_id[16] = {};
+	uint8_t link_span_id[8] = {};
 };
-SpanIdentity IdentityOf(const acl::AuditEvent &event, std::mt19937_64 &random);
+SpanIdentity IdentityOf(const acl::AuditEvent &event);
 //! `acl SELECT` / `acl MANAGE` / `acl NATIVE` - the base's statement class, never the SQL text (C5);
-//! `acl session` for a session close; a lifecycle kind that never becomes a span keeps its kind
+//! `acl session` for a session close; `acl exec SELECT` for an execution (spec 009); a lifecycle
+//! kind that never becomes a span keeps its kind
 string SpanNameOf(const acl::AuditEvent &event);
 //! kError only when the reason code says our side failed (`source_error`, `policy_error`); a refusal
-//! by policy is the system working and stays kUnset, like an allowed decision
+//! by policy is the system working and stays kUnset, like an allowed decision. An execution that
+//! failed (spec 009) is kError, whatever failed it: a failed query is a failed span.
 bool SpanIsError(const acl::AuditEvent &event);
 
 //! The OTLP span exporter (spec 008): the trace twin of OtlpExporter, built from the same config so
@@ -138,14 +160,19 @@ public:
 	bool Export(const vector<acl::AuditEvent> &batch, string &error) override;
 	string Describe() const override;
 	//! fill one SDK span from one event: `[ts_us - duration, ts_us]`, kInternal, the name, the
-	//! status, the identity, and the same attributes the record carries. Shared with the tests.
+	//! status, the identity, and the same attributes the record carries; for an execution (spec
+	//! 009) also the link to its decision, one `acl.source` event per source and, with
+	//! `profile_plan`, one `acl.operator` event per plan node. Shared with the tests.
 	static void FillSpan(opentelemetry::sdk::trace::Recordable &span, const acl::AuditEvent &event,
-	                     const SpanIdentity &identity, const vector<string> &claims);
+	                     const SpanIdentity &identity, const vector<string> &claims, bool profile_plan = true);
+	//! spec 009, opt-in: one child span per operator of the plan, nested as the plan says, under the
+	//! execution span `parent`; `[ts_us - timing_us, ts_us]`, labelled cumulative_thread_time
+	static void FillOperatorSpan(opentelemetry::sdk::trace::Recordable &span, const acl::AuditEvent &event,
+	                             const acl::AuditPlanNode &node, const SpanIdentity &parent);
 
 private:
 	OtlpConfig config;
 	string description;
-	std::mt19937_64 random; // Export runs on the lane's one worker; the tests call it from one thread
 	std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> exporter; // the SDK factory hands out std::
 	unique_ptr<opentelemetry::sdk::resource::Resource> resource;
 	unique_ptr<opentelemetry::sdk::instrumentationscope::InstrumentationScope> scope;

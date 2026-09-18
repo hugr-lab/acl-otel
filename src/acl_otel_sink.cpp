@@ -215,6 +215,9 @@ bool OtelSink::SessionSpans() {
 
 void OtelSink::OnEvent(const acl::AuditEvent &event) {
 	stats.received++;
+	if (event.kind == "profile") {
+		profiles_received++; // spec 009
+	}
 	shared_ptr<OtelMetrics> observers;
 	shared_ptr<Sampler> ratio;
 	shared_ptr<EventQueue> lane;

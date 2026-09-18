@@ -56,6 +56,34 @@ vector<Histogram> DefaultHistograms() {
 	                         "rows per completed ingest, by door",
 	                         {100, 1000, 10000, 100000, 1000000, 10000000},
 	                         {}});
+	// spec 009: the execution, by statement and by source. The node is the resource's
+	// service.instance.id on every point, never a second label.
+	out.push_back(Histogram {"acl.exec.duration",
+	                         "us",
+	                         "how long a decided statement ran, by door, statement class and result",
+	                         {1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000, 10000000, 60000000},
+	                         {}});
+	out.push_back(Histogram {"acl.exec.source.duration",
+	                         "us",
+	                         "thread time a statement's scans of one source took, by source and scanner",
+	                         {1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000, 10000000, 60000000},
+	                         {}});
+	out.push_back(Histogram {"acl.exec.source.rows",
+	                         "rows",
+	                         "rows a statement's scans of one source returned, by source and scanner",
+	                         {100, 1000, 10000, 100000, 1000000, 10000000, 100000000},
+	                         {}});
+	out.push_back(Histogram {"acl.exec.source.pushdown_filters",
+	                         "{filter}",
+	                         "predicates the scanner of one source took on itself per statement",
+	                         {0, 1, 2, 4, 8, 16},
+	                         {}});
+	out.push_back(Histogram {
+	    "acl.exec.peak_memory",
+	    "By",
+	    "the buffer pool's peak while a statement ran, by door",
+	    {1048576.0, 16777216.0, 67108864.0, 268435456.0, 1073741824.0, 4294967296.0, 17179869184.0, 68719476736.0},
+	    {}});
 	return out;
 }
 
@@ -351,6 +379,24 @@ void OtelMetrics::Observe(const acl::AuditEvent &event) {
 	if (event.kind == "ingest" && event.rows >= 0) {
 		record("acl.ingest.rows", {{"door", event.door.empty() ? "gateway" : event.door}},
 		       static_cast<double>(event.rows));
+	}
+	if (event.kind == "profile") {
+		// spec 009: the execution's own numbers, and one observation per source it read
+		Labels door {{"door", event.door.empty() ? "gateway" : event.door}};
+		if (event.exec_us >= 0) {
+			record("acl.exec.duration",
+			       {door[0], {"statement", event.statement}, {"result", event.error ? "error" : "ok"}},
+			       static_cast<double>(event.exec_us));
+		}
+		if (event.peak_memory >= 0) {
+			record("acl.exec.peak_memory", door, static_cast<double>(event.peak_memory));
+		}
+		for (auto &source : event.sources) {
+			Labels by_source {{"source", source.source}, {"kind", source.kind}};
+			record("acl.exec.source.duration", by_source, static_cast<double>(source.timing_us));
+			record("acl.exec.source.rows", by_source, static_cast<double>(source.rows));
+			record("acl.exec.source.pushdown_filters", by_source, static_cast<double>(source.filters));
+		}
 	}
 	// the opt-in series: only decisions, and only what the operator asked for (R2.3)
 	if (event.kind != "statement" && event.kind != "admin") {

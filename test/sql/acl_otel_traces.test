@@ -119,3 +119,31 @@ SET GLOBAL acl_otel_traces = 'off';
 
 statement ok
 SET GLOBAL acl_otel_endpoint = '';
+
+# --- spec 009: the profile's two settings are the operator's, judged at the SET, in the status ------
+
+statement error
+SET acl_otel_profile_plan = false;
+----
+<REGEX>:.*acl_otel_profile_plan is global - use SET GLOBAL.*
+
+statement error
+SET acl_otel_profile_spans = true;
+----
+<REGEX>:.*acl_otel_profile_spans is global - use SET GLOBAL.*
+
+query I
+SELECT acl_otel_status() LIKE '%"profile":{"plan":true,"spans":false,"events":0}%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_profile_plan = false;
+
+statement ok
+SET GLOBAL acl_otel_profile_spans = true;
+
+query I
+SELECT acl_otel_status() LIKE '%"profile":{"plan":false,"spans":true,"events":0}%';
+----
+true

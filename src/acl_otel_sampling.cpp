@@ -117,7 +117,19 @@ bool Sampler::Keep(const acl::AuditEvent &event) const {
 	// R6.1: only an allowed STATEMENT is ever sampled away. An admin decision is a change to the
 	// policy - the most audit-relevant allowed event there is - and everything else (a refusal, a
 	// session, a door, an ingest, a policy, a keys event) is the record the audit exists for.
-	if (everything || !event.allowed || event.kind != "statement") {
+	if (everything) {
+		return true;
+	}
+	// spec 009: an execution is kept or thinned with its decision - judged by the decision's seq,
+	// the same ratio for the same roles - and a failed one is never thinned (it is the record the
+	// operator wants, as a refusal is). An unlinked profile is judged by its own seq.
+	int64_t seq = event.seq;
+	if (event.kind == "profile") {
+		if (event.error) {
+			return true;
+		}
+		seq = event.decision_seq >= 0 ? event.decision_seq : event.seq;
+	} else if (!event.allowed || event.kind != "statement") {
 		return true;
 	}
 	auto ratio = RatioFor(event.principal.roles);
@@ -127,9 +139,9 @@ bool Sampler::Keep(const acl::AuditEvent &event) const {
 	if (ratio <= 0.0) {
 		return false;
 	}
-	// deterministic in the event's own seq: a 64-bit mix (splitmix64's finaliser), compared against
-	// the ratio in millionths. No state, no lock, and two nodes agree about the same statement.
-	auto mixed = static_cast<uint64_t>(event.seq) + 0x9E3779B97F4A7C15ULL;
+	// deterministic in the seq: a 64-bit mix (splitmix64's finaliser), compared against the ratio in
+	// millionths. No state, no lock, and two nodes agree about the same statement.
+	auto mixed = static_cast<uint64_t>(seq) + 0x9E3779B97F4A7C15ULL;
 	mixed = (mixed ^ (mixed >> 30)) * 0xBF58476D1CE4E5B9ULL;
 	mixed = (mixed ^ (mixed >> 27)) * 0x94D049BB133111EBULL;
 	mixed = mixed ^ (mixed >> 31);

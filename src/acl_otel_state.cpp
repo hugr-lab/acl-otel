@@ -643,6 +643,12 @@ OtlpConfig ConfigAfter(DatabaseInstance &db, const string &changed, const Value 
 	if (changed == "acl_otel_insecure") {
 		config.insecure = !value.IsNull() && value.GetValue<bool>();
 	}
+	if (changed == "acl_otel_profile_plan") {
+		config.profile_plan = value.IsNull() || value.GetValue<bool>();
+	}
+	if (changed == "acl_otel_profile_spans") {
+		config.profile_spans = !value.IsNull() && value.GetValue<bool>();
+	}
 	return config;
 }
 
@@ -793,6 +799,11 @@ string OtelState::StatusJson(DatabaseInstance &db) {
 		auto last_error = current->LastError();
 		json += ",\"last_error\":" + (last_error.empty() ? string("null") : JsonQuote(last_error));
 	}
+	// spec 009: the profile's two settings in force, and how many profile events the sink was
+	// handed (`events`, not `received`: the lanes' own `received` counts are matched by name)
+	json += ",\"profile\":{\"plan\":" + string(SettingBool(db, "acl_otel_profile_plan", true) ? "true" : "false") +
+	        ",\"spans\":" + string(SettingBool(db, "acl_otel_profile_spans", false) ? "true" : "false") +
+	        ",\"events\":" + std::to_string(current ? current->profiles_received.load() : 0) + "}";
 	// spec 008: the span lane, last - null while traces are off (nothing is allocated then)
 	auto lane = current ? current->Traces() : nullptr;
 	if (lane) {
