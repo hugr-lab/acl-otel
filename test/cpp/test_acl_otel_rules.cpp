@@ -53,6 +53,8 @@ int main() {
 	Check(Refused("[{\"role\": \"x\", \"level\": \"loud\"}]", "needs a level of off, denied, decisions or all"),
 	      "a bad level is refused");
 	Check(Refused("[{\"role\": \"x\"}]", "needs a level"), "a rule without a level is refused");
+	Check(Refused("[{\"role\": \"x\", \"profile\": \"loud\"}]", "needs a profile of off, sampled or all"),
+	      "a bad profile is refused");
 	Check(Refused("[{\"roles\": \"x\", \"level\": \"all\"}]", "unknown key \"roles\""), "a typo key is refused");
 	Check(Refused("nope", "not a JSON document"), "non-JSON is refused");
 
@@ -74,6 +76,51 @@ int main() {
 	policy.SetRules({});
 	Check(!policy.LevelFor(Someone("u9", "https://other", {"viewer"}), "gateway", level),
 	      "rules cleared: no opinion again");
+	{
+		// spec 009: the profile level as a rule - beside the audit level, or on its own; each lookup
+		// walks the rules that carry the level it asks for
+		auto mixed = acl_otel::ParseLevelRules(
+		    R"([{"role": "analyst", "profile": "all"},
+		        {"door": "flight", "level": "all", "profile": "sampled"},
+		        {"level": "denied"}])");
+		Check(mixed.size() == 3 && !mixed[0].has_level && mixed[0].has_profile &&
+		          mixed[0].profile == acl::ProfileLevel::ALL && mixed[1].has_level && mixed[1].has_profile &&
+		          mixed[1].profile == acl::ProfileLevel::SAMPLED && mixed[2].has_level && !mixed[2].has_profile,
+		      "a rule may carry a profile alone, both, or a level alone");
+		acl_otel::OtelPolicy both;
+		acl::ProfileLevel profile;
+		Check(!both.ProfileFor(Someone("u1", "i", {"analyst"}), "flight", profile),
+		      "no rules: no opinion on profiling");
+		both.SetRules(mixed);
+		Check(both.ProfileFor(Someone("u1", "i", {"analyst"}), "flight", profile) && profile == acl::ProfileLevel::ALL,
+		      "the analyst's profile rule wins first");
+		Check(both.LevelFor(Someone("u1", "i", {"analyst"}), "flight", level) && level == acl::AuditLevel::ALL,
+		      "...while the audit level skips it (it names none) and lands on the flight rule");
+		Check(both.ProfileFor(Someone("u2", "i", {"viewer"}), "flight", profile) &&
+		          profile == acl::ProfileLevel::SAMPLED,
+		      "a viewer through flight is sampled by the second rule");
+		Check(!both.ProfileFor(Someone("u2", "i", {"viewer"}), "quack", profile),
+		      "...and through quack no rule speaks about profiling: no opinion");
+		Check(both.LevelFor(Someone("u2", "i", {"viewer"}), "quack", level) && level == acl::AuditLevel::DENIED,
+		      "though the bare audit rule still catches it");
+		// the table's optional column: a row with a profile and no level, a row with both
+		auto only_profile = acl_otel::RuleFromRow("analyst", "", "", "", "", 1, "all");
+		Check(!only_profile.has_level && only_profile.has_profile && only_profile.profile == acl::ProfileLevel::ALL,
+		      "a row with a profile and an empty level is a profile rule alone");
+		auto with_both = acl_otel::RuleFromRow("", "", "", "flight", "all", 2, " Sampled ");
+		Check(with_both.has_level && with_both.level == acl::AuditLevel::ALL && with_both.has_profile &&
+		          with_both.profile == acl::ProfileLevel::SAMPLED,
+		      "a row with both carries both, the profile read whatever its case");
+		auto without = acl_otel::RuleFromRow("", "", "", "", "denied", 3);
+		Check(without.has_level && !without.has_profile, "a row without the column is a level rule alone");
+		bool refused = false;
+		try {
+			acl_otel::RuleFromRow("", "", "", "", "all", 8, "loud");
+		} catch (std::exception &ex) {
+			refused = string(ErrorData(ex).RawMessage()).find("row 8 needs a profile") != string::npos;
+		}
+		Check(refused, "an unknown profile names the row it came from");
+	}
 	{
 		// spec 007: one row of the central table. NULL, '' and '*' are three ways of saying "any".
 		auto any = acl_otel::RuleFromRow("*", "", "", "", "all", 1);

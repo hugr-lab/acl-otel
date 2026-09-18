@@ -110,7 +110,7 @@ denies every `acl_`-prefixed function to a principal, and every setting here ref
 | `acl_otel_traces` | `off` | `linked` = a span for every decision carrying a usable `traceparent`, under the caller's span; `all` = every decision, rooting its own trace without one; `off` allocates nothing |
 | `acl_otel_session_spans` | `false` | also a span per session, from open to close, by how it ended |
 | `acl_otel_profile_plan` / `_profile_spans` | `true` / `false` | spec 009, once the base profiles (`acl_profile_level`): whether a profile's plan travels (the record's body, the `acl.operator` span events), and the plan as child spans of the execution span, labelled cumulative thread time |
-| `acl_otel_rules_table` / `_rules_interval` / `_max_rules` | `''` / `30` / `1000` | the table the level rules are read from, how often, and how many at most |
+| `acl_otel_rules_table` / `_rules_interval` / `_max_rules` | `''` / `30` / `1000` | the table the level rules are read from, how often, and how many at most; a rule (JSON or a row) may carry `profile` = `off` / `sampled` / `all` beside or instead of `level` - the base's per-session profile level (spec 074), a `profile VARCHAR` column the operator adds to the table |
 
 A setting at its default means the standard environment decides, so a container configured the
 OpenTelemetry way needs no SET; a setting that is set wins over its variable.

@@ -492,10 +492,17 @@ idx_t OtelState::RefreshRules(DatabaseInstance &db) {
 	auto cap = MaxValue<int64_t>(SettingInt64(db, "acl_otel_max_rules", 1000), 1);
 	// the table is the operator's own name, not a principal's input: quoted as an identifier path so
 	// a name with a dot or a space still reads, and never concatenated from anything an event carried
-	string query = "SELECT seq, role, subject, issuer, door, level FROM " + table + " ORDER BY seq LIMIT " +
-	               std::to_string(cap + 1);
+	string columns = "seq, role, subject, issuer, door, level";
+	string tail = " FROM " + table + " ORDER BY seq LIMIT " + std::to_string(cap + 1);
 	Connection con(db);
-	auto result = con.Query(query);
+	// spec 009: the `profile` column is optional - a table created before it, or without it, still
+	// reads, and its rules then decide the audit level only
+	bool with_profile = true;
+	auto result = con.Query("SELECT " + columns + ", profile" + tail);
+	if (result->HasError()) {
+		with_profile = false;
+		result = con.Query("SELECT " + columns + tail);
+	}
 	if (result->HasError()) {
 		std::lock_guard<std::mutex> guard(lock);
 		rules_error = result->GetError();
@@ -516,7 +523,8 @@ idx_t OtelState::RefreshRules(DatabaseInstance &db) {
 			parsed.push_back(RuleFromRow(text(result->GetValue(1, row)), text(result->GetValue(2, row)),
 			                             text(result->GetValue(3, row)), text(result->GetValue(4, row)),
 			                             text(result->GetValue(5, row)),
-			                             seq.IsNull() ? NumericCast<int64_t>(row) : seq.GetValue<int64_t>()));
+			                             seq.IsNull() ? NumericCast<int64_t>(row) : seq.GetValue<int64_t>(),
+			                             with_profile ? text(result->GetValue(6, row)) : string()));
 		} catch (std::exception &ex) {
 			trouble = ErrorData(ex).RawMessage();
 			break;

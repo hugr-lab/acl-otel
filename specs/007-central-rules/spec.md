@@ -36,6 +36,11 @@ belongs beside it: written once, read by all, changed without a restart.
   | `role`, `subject`, `issuer`, `door` VARCHAR | the match, `NULL` or `''` or `*` meaning "any" |
   | `level` VARCHAR | `off`, `denied`, `decisions` or `all` |
 
+- **Addendum (2026-09-18, spec 009)**: an optional `profile VARCHAR` column (`off`, `sampled`,
+  `all`; NULL or `''` = no opinion) carries the base's per-session profile level (spec 074) - the
+  operator adds it with `ALTER TABLE ... ADD COLUMN`; a table without it reads as before, its rules
+  deciding the audit level only. A row may carry a profile with an empty level. The reader tries
+  the seven-column query and falls back to six.
 - Reading is `SELECT seq, role, subject, issuer, door, level FROM <table> ORDER BY seq` on a
   connection of ours, at most `acl_otel_max_rules` (1000) rows. A row with an unknown level, or a
   read that fails, leaves the rules **as they were** and is reported in the status: a fleet's

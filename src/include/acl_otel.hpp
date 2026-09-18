@@ -28,22 +28,29 @@
 namespace duckdb {
 namespace acl_otel {
 
-//! One level rule (R3): first match wins; an empty field, or `*`, matches anything.
+//! One rule (R3): first match wins; an empty field, or `*`, matches anything. A rule names an audit
+//! level, a profile level (spec 009's addendum), or both - each lookup walks the rules that carry
+//! the level it asks for, so a rule about profiling never shadows one about the audit.
 struct LevelRule {
 	string role;
 	string subject;
 	string issuer;
 	string door;
+	bool has_level = true;
 	acl::AuditLevel level = acl::AuditLevel::DECISIONS;
+	bool has_profile = false;
+	acl::ProfileLevel profile = acl::ProfileLevel::OFF;
 };
 
 //! `acl_otel_level_rules`: a JSON array of objects, each with any of role / subject / issuer / door
-//! and a level. Throws InvalidInputException naming what is wrong; "" or "[]" is no rules.
+//! and a `level` and/or a `profile`. Throws InvalidInputException naming what is wrong; "" or "[]"
+//! is no rules.
 vector<LevelRule> ParseLevelRules(const string &json);
 //! spec 007: one row of the central table as a rule. NULL, '' and '*' all mean "any"; an unknown
-//! level throws, naming the row.
+//! level throws, naming the row. `profile` is the optional column (spec 009): '' or NULL is no
+//! opinion about profiling, and a row may carry it with an empty level.
 LevelRule RuleFromRow(const string &role, const string &subject, const string &issuer, const string &door,
-                      const string &level, int64_t seq);
+                      const string &level, int64_t seq, const string &profile = string());
 bool RuleMatches(const LevelRule &rule, const acl::Principal &principal, const string &door);
 
 class OtelMetrics;     // spec 003, acl_otel_metrics.hpp
@@ -271,10 +278,13 @@ private:
 	bool session_spans = false;
 };
 
-//! The session policy (R3): the rules as last set, first match wins; no rule = no opinion.
+//! The session policy (R3): the rules as last set, first match wins; no rule = no opinion. The
+//! same rules answer the base's two questions - the audit level (spec 069) and the profile level
+//! (spec 074) - each from the rules that carry that level.
 class OtelPolicy : public acl::SessionPolicy {
 public:
 	bool LevelFor(const acl::Principal &principal, const string &door, acl::AuditLevel &out) override;
+	bool ProfileFor(const acl::Principal &principal, const string &door, acl::ProfileLevel &out) override;
 	void SetRules(vector<LevelRule> rules_p);
 	idx_t RuleCount();
 

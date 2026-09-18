@@ -197,6 +197,36 @@ true	true
 statement ok
 SET GLOBAL acl_profile_level = 'off';
 
+# spec 009's addendum: a rule about profiling reaches the base through SessionPolicy::ProfileFor -
+# the analyst is profiled while the node's level is off, and the base's listing says the policy
+# decided it
+statement ok
+SET GLOBAL acl_otel_level_rules = '[{"role": "analyst", "level": "all", "profile": "all"}]';
+
+query I
+SELECT acl_sessions() LIKE '%"profile_level":"all","profile_source":"policy"%';
+----
+true
+
+statement ok
+ACL ROLE 'analyst' SELECT count(*) FROM orders;
+
+statement ok
+SELECT acl_audit_flush();
+
+query I
+SELECT acl_otel_status() LIKE '%"profile":{"plan":true,"spans":false,"events":2}%';
+----
+true
+
+statement ok
+SET GLOBAL acl_otel_level_rules = '[{"role": "analyst", "level": "all"}]';
+
+query I
+SELECT acl_sessions() LIKE '%"profile_level":"off","profile_source":"instance"%';
+----
+true
+
 statement ok
 SET GLOBAL acl_otel_traces = 'off';
 

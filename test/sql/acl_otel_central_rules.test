@@ -89,9 +89,34 @@ SELECT acl_otel_rules_refresh(), acl_otel_status() LIKE '%"rules":2%';
 ----
 2	true
 
+# spec 009: the optional `profile` column - added by the operator, read when it is there; a row may
+# carry a profile with an empty level, and the rule count includes it
+statement ok
+ALTER TABLE store.acl_otel.level_rules ADD COLUMN profile VARCHAR;
+
+statement ok
+INSERT INTO store.acl_otel.level_rules (seq, role, profile) VALUES (0, 'analyst', 'all');
+
+query II
+SELECT acl_otel_rules_refresh(), acl_otel_status() LIKE '%"rules":3%';
+----
+3	true
+
+# a row with an unknown profile leaves the rules in force and names itself
+statement ok
+INSERT INTO store.acl_otel.level_rules (seq, role, level, profile) VALUES (4, 'nobody', 'all', 'loud');
+
+statement error
+SELECT acl_otel_rules_refresh();
+----
+<REGEX>:.*row 4 needs a profile of off, sampled or all.*
+
+statement ok
+DELETE FROM store.acl_otel.level_rules WHERE seq = 4;
+
 # a row with an unknown level leaves the rules in force and says so
 statement ok
-INSERT INTO store.acl_otel.level_rules VALUES (3, 'nobody', NULL, NULL, NULL, 'loud');
+INSERT INTO store.acl_otel.level_rules VALUES (3, 'nobody', NULL, NULL, NULL, 'loud', NULL);
 
 statement error
 SELECT acl_otel_rules_refresh();
@@ -99,7 +124,7 @@ SELECT acl_otel_rules_refresh();
 <REGEX>:.*needs a level of off, denied, decisions or all.*
 
 query II
-SELECT s LIKE '%"rules":2%', s LIKE '%"rules_error":null%' FROM (SELECT acl_otel_status() AS s);
+SELECT s LIKE '%"rules":3%', s LIKE '%"rules_error":null%' FROM (SELECT acl_otel_status() AS s);
 ----
 true	false
 
@@ -109,7 +134,7 @@ DELETE FROM store.acl_otel.level_rules WHERE seq = 3;
 query I
 SELECT acl_otel_rules_refresh();
 ----
-2
+3
 
 # a table that is not there is an error an operator can read, and not a crash
 statement ok
@@ -127,7 +152,7 @@ false
 
 # ... and the rules it read before are still the rules
 query I
-SELECT acl_otel_status() LIKE '%"rules":2%';
+SELECT acl_otel_status() LIKE '%"rules":3%';
 ----
 true
 

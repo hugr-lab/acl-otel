@@ -132,7 +132,9 @@ proves two loadables share a registry has proven nothing.
   `AttributeValue`, no nested map); five `acl.exec.*` histograms with `source` / `kind` labels (the
   node is the resource); the sampler keeps a profile with its decision (by `decision_seq`), never
   thins a failed one. `acl_otel_profile_plan` (the plan travels at all), `acl_otel_profile_spans`
-  (operators as child spans, labelled `cumulative_thread_time` - opt-in: not an interval).
+  (operators as child spans, labelled `cumulative_thread_time` - opt-in: not an interval). A rule
+  (JSON or a table row) may carry `profile` beside or instead of `level`: `OtelPolicy::ProfileFor`
+  answers the base's per-session profile level from the rules that carry one.
 - **The extension never writes to the policy catalog and never calls a policy-changing `acl_*`
   function** (R9.3).
 - **A setting is read twice, or it is read wrong**: in its SET callback (so a change applies to what
