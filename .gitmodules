@@ -6,7 +6,6 @@
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
 	branch = main
-[submodule "duckdb-acl"]
-	path = duckdb-acl
-	url = https://github.com/hugr-lab/duckdb-acl
-	branch = main
+[submodule "duckdb-ext-common"]
+	path = duckdb-ext-common
+	url = https://github.com/hugr-lab/duckdb-ext-common
