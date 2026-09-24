@@ -58,6 +58,7 @@ test/cpp/                  # C++ tests (make test-cpp): rules + sink Makefile-co
                            #   targets acl_otel_test_{otlp,metrics_otlp,traces_otlp} (they link the SDK) with fake
                            #   receivers in-process; the traces one also runs the two-loadable span round trip under ACL_EXT
 deploy/                    # reference Collector configuration (otlp → azuremonitor)
+website/                   # the docs site (Docusaurus), published by pages.yml to hugr-lab.github.io/acl-otel
 specs/                     # one spec per feature (specs/README.md); design/ is local research (gitignored)
 scripts/ci/                # smoke_load (the artifact LOADS), assert_ran (a suite that skipped is red), prune_vcpkg_cache
 ```
