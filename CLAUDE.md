@@ -24,7 +24,7 @@ specs here.
   | Piece | Where | Pin |
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera` (the base's; `v2.0.0` when tagged) |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` (`contracts/acl_audit.hpp` + `acl_principal.hpp`; no submodules of its own) | a tag (`v0.2.0`) |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` (`contracts/acl_audit.hpp` + `acl_principal.hpp`, and since spec 011 `contracts/tresor_audit.hpp` on `hooks/ext_hooks.hpp`; no submodules of its own) | a tag (`v0.7.1`) |
   | duckdb-acl | **no submodule** since spec 010: the `ACL_BASE` file names the base commit whose CI artifact `fetch_base.sh` prefers for the beside-acl proof | a commit of `main` |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main` |
   | CI reusable workflows | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
@@ -138,6 +138,13 @@ proves two loadables share a registry has proven nothing.
   (operators as child spans, labelled `cumulative_thread_time` - opt-in: not an interval). A rule
   (JSON or a table row) may carry `profile` beside or instead of `level`: `OtelPolicy::ProfileFor`
   answers the base's per-session profile level from the rules that carry one.
+- **tresor's audit rides the same lanes** (spec 011): `TresorAuditHooks::Reach` (duckdb-ext-common
+  TRSA 1, on `hooks/ext_hooks.hpp`) at Start beside the base's registry, refused and said on another
+  TRSA or hooks base version; `EventQueueOf<E>` / `ExporterOf<E>` are the lanes of either event type;
+  the transports are the logs'/spans' own under scope `tresor`. A tresor span needs the caller's sampled
+  traceparent AND a measured call (`duration_us >= 0`) - never a zero-length one; its id is derived
+  with tresor's salt so it never collides with a decision span. The sink never reaches the object
+  cache (tresor's last delivery runs inside the cache's teardown). Status fields of its own names.
 - **The extension never writes to the policy catalog and never calls a policy-changing `acl_*`
   function** (R9.3).
 - **A setting is read twice, or it is read wrong**: in its SET callback (so a change applies to what

@@ -162,7 +162,120 @@ bool OtelState::Start(DatabaseInstance &db) {
 	hooks->AddSink(sink);
 	hooks->SetSessionPolicy(policy);
 	attached = true;
+	AttachTresorLocked(db); // spec 011
 	return true;
+}
+
+//===--------------------------------------------------------------------===//
+// spec 011: tresor's audit
+//===--------------------------------------------------------------------===//
+
+void OtelState::AttachTresorLocked(DatabaseInstance &db) {
+	if (tresor_sink || !SettingBool(db, "acl_otel_tresor", true)) {
+		return;
+	}
+	string why;
+	auto registry = tresor::TresorAuditHooks::Reach(db.GetObjectCache(), why);
+	if (!registry) {
+		tresor_error = why; // another TRSA or hooks base version: nothing of ours goes on it
+		return;
+	}
+	tresor_error.clear();
+	auto queue = SettingInt64(db, "acl_otel_queue_size", 10000);
+	auto batch = SettingInt64(db, "acl_otel_batch_size", 512);
+	auto flush = SettingInt64(db, "acl_otel_flush_interval", 5);
+	auto sink_now = make_shared_ptr<TresorOtelSink>(
+	    NumericCast<idx_t>(MaxValue<int64_t>(queue, 1)), NumericCast<idx_t>(MaxValue<int64_t>(batch, 1)),
+	    MaxValue<int64_t>(flush, 1) * 1000, BuildTresorExporter(db, string(), Value()));
+	ApplyTresorSpans(db, string(), Value(), *sink_now);
+	registry->AddSink(sink_now);
+	tresor_hooks = std::move(registry);
+	tresor_sink = std::move(sink_now);
+}
+
+shared_ptr<TresorOtelSink> OtelState::DetachTresorLocked() {
+	auto ending = std::move(tresor_sink);
+	if (ending && tresor_hooks) {
+		tresor_hooks->RemoveSink(ending);
+	}
+	return ending;
+}
+
+void OtelState::RetireTresor(TresorOtelSink &ending) {
+	ending.Flush();
+	ending.Stop(); // tresor may call OnEvent once more: the stopped lanes drop and count
+	auto losses = [](EventQueueOf<tresor::TresorAuditEvent> &lane) {
+		return lane.stats.dropped_queue.load() + lane.stats.dropped_no_exporter.load() +
+		       lane.stats.export_errors.load();
+	};
+	int64_t lost = losses(ending.Records());
+	auto lane = ending.Spans();
+	if (lane) {
+		lost += losses(*lane);
+	}
+	std::lock_guard<std::mutex> guard(lock);
+	retired_tresor_losses += lost;
+}
+
+void OtelState::ReconfigureTresor(DatabaseInstance &db, bool on) {
+	shared_ptr<TresorOtelSink> ending;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if (!attached) {
+			return; // Start reads the setting
+		}
+		if (on) {
+			AttachTresorLocked(db);
+			return;
+		}
+		tresor_error.clear();
+		ending = DetachTresorLocked();
+	}
+	if (ending) {
+		RetireTresor(*ending);
+	}
+}
+
+string OtelState::TresorError() {
+	std::lock_guard<std::mutex> guard(lock);
+	return tresor_error;
+}
+
+shared_ptr<TresorOtelSink> OtelState::TresorSink() {
+	std::lock_guard<std::mutex> guard(lock);
+	return tresor_sink;
+}
+
+void OtelState::ApplyTresorSpans(DatabaseInstance &db, const string &changed, const Value &value,
+                                 TresorOtelSink &target) {
+	auto mode_text = changed == "acl_otel_traces" ? (value.IsNull() ? string("off") : value.ToString())
+	                                              : SettingString(db, "acl_otel_traces", "off");
+	TraceMode mode;
+	if (!ParseTraceMode(mode_text, mode)) {
+		return; // ApplyTraces refuses the value for both
+	}
+	auto lane = target.Spans();
+	if (mode == TraceMode::OFF) {
+		// tresor's spans exist only under a caller's trace, so `linked` and `all` both take them
+		target.SetSpans(nullptr);
+		if (lane) {
+			lane->FlushNow();
+			lane->Stop();
+			auto lost = lane->stats.dropped_queue.load() + lane->stats.dropped_no_exporter.load() +
+			            lane->stats.export_errors.load();
+			std::lock_guard<std::mutex> guard(lock);
+			retired_tresor_losses += lost;
+		}
+		return;
+	}
+	if (!lane) {
+		auto queue = SettingInt64(db, "acl_otel_queue_size", 10000);
+		auto batch = SettingInt64(db, "acl_otel_batch_size", 512);
+		auto flush = SettingInt64(db, "acl_otel_flush_interval", 5);
+		target.SetSpans(make_shared_ptr<TresorQueue>(
+		    NumericCast<idx_t>(MaxValue<int64_t>(queue, 1)), NumericCast<idx_t>(MaxValue<int64_t>(batch, 1)),
+		    MaxValue<int64_t>(flush, 1) * 1000, BuildTresorTraceExporter(db, changed, value)));
+	}
 }
 
 //! spec 007: the reader runs only when a table is named, and reads once at once so a node that just
@@ -288,6 +401,44 @@ vector<MetricPoint> OtelState::SelfMetrics(DatabaseInstance &db) {
 		counter("acl_otel.metrics_ticks", scrape->stats.ticks.load(), {}, "metric scrapes attempted");
 		counter("acl_otel.metrics_errors", scrape->stats.export_errors.load(), {}, "metric scrapes a backend refused");
 	}
+	// spec 011: tresor's own counters, by the names tresor gives them (bounded attributes, its R7), and
+	// our lanes' numbers for its events
+	shared_ptr<tresor::TresorAuditHooks> tresor_registry;
+	shared_ptr<TresorOtelSink> tresor_now;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		tresor_registry = tresor_hooks;
+		tresor_now = tresor_sink;
+	}
+	if (tresor_registry && tresor_now) {
+		for (auto &metric : tresor_registry->GetCounters().Snapshot()) {
+			points.push_back(MetricPoint {metric.name, metric.attributes, metric.value, true,
+			                              metric.unit.empty() ? string("1") : metric.unit, metric.description});
+		}
+		auto &records = tresor_now->Records().stats;
+		counter("acl_otel.tresor.received", tresor_now->received.load(), {},
+		        "tresor audit events this sink was handed");
+		counter("acl_otel.tresor.exported", records.exported.load(), {}, "tresor audit records a backend received");
+		counter("acl_otel.tresor.dropped", records.dropped_queue.load(), {{"why", "queue"}},
+		        "tresor audit records lost, by why");
+		counter("acl_otel.tresor.dropped", records.dropped_no_exporter.load(), {{"why", "no_exporter"}},
+		        "tresor audit records lost, by why");
+		counter("acl_otel.tresor.dropped", records.export_errors.load(), {{"why", "export_error"}},
+		        "tresor audit records lost, by why");
+		auto lane = tresor_now->Spans();
+		if (lane) {
+			counter("acl_otel.tresor.spans.exported", lane->stats.exported.load(), {},
+			        "tresor spans a backend received");
+			counter("acl_otel.tresor.spans.dropped",
+			        lane->stats.dropped_queue.load() + lane->stats.export_errors.load() +
+			            lane->stats.dropped_no_exporter.load(),
+			        {{"why", "lost"}}, "tresor spans lost");
+			counter("acl_otel.tresor.spans.dropped", lane->stats.unsampled.load(), {{"why", "unsampled"}},
+			        "tresor spans not built because the caller's trace is not recorded");
+		}
+	}
+	gauge("acl_otel.tresor.attached", tresor_now ? 1 : 0, "",
+	      "1 while this extension is on tresor's audit registry (spec 011)");
 	gauge("acl_otel.attached", is_attached ? 1 : 0, "", "1 while this extension is on the base's audit registry");
 	gauge("acl_otel.healthy", Healthy(db) ? 1 : 0, "",
 	      "0 while acl_otel_strict is on and this node is losing events, or is not attached (R7.3)");
@@ -334,9 +485,20 @@ bool OtelState::Healthy(DatabaseInstance &db) {
 		auto &spans = lane->stats;
 		drops += spans.dropped_queue.load() + spans.dropped_no_exporter.load() + spans.export_errors.load();
 	}
+	// spec 011: tresor's records and spans that did not arrive are losses of the same kind
+	auto tresor_now = TresorSink();
+	if (tresor_now) {
+		auto &records = tresor_now->Records().stats;
+		drops += records.dropped_queue.load() + records.dropped_no_exporter.load() + records.export_errors.load();
+		auto tresor_lane = tresor_now->Spans();
+		if (tresor_lane) {
+			auto &spans = tresor_lane->stats;
+			drops += spans.dropped_queue.load() + spans.dropped_no_exporter.load() + spans.export_errors.load();
+		}
+	}
 	auto window = SettingInt64(db, "acl_otel_health_window", 60);
 	std::lock_guard<std::mutex> guard(lock);
-	drops += retired_span_losses;
+	drops += retired_span_losses + retired_tresor_losses;
 	return !health.Losing(drops, NowMicros(), window);
 }
 
@@ -414,12 +576,17 @@ void OtelState::ReconfigureTraces(DatabaseInstance &db, const string &changed, c
 		return; // stopped: Start reads the settings again
 	}
 	ApplyTraces(db, changed, value, *current);
+	auto tresor_now = TresorSink();
+	if (tresor_now) {
+		ApplyTresorSpans(db, changed, value, *tresor_now); // spec 011: tresor's spans ride the same switch
+	}
 }
 
 bool OtelState::Stop() {
 	StopRulesReader(); // first: a thread that queries a database must never outlive the database
 	shared_ptr<OtelSink> ending;
 	shared_ptr<OtelMetrics> ending_metrics;
+	shared_ptr<TresorOtelSink> ending_tresor;
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		if (!attached) {
@@ -434,6 +601,10 @@ bool OtelState::Stop() {
 		if (metrics) {
 			ending_metrics = std::move(metrics);
 		}
+		ending_tresor = DetachTresorLocked(); // spec 011
+	}
+	if (ending_tresor) {
+		RetireTresor(*ending_tresor);
 	}
 	if (ending_metrics) {
 		ending_metrics->Stop();                  // outside the lock: its thread may be mid-export
@@ -709,6 +880,25 @@ shared_ptr<Exporter> OtelState::BuildTraceExporter(DatabaseInstance &db, const s
 	return make_shared_ptr<OtlpTraceExporter>(config);
 }
 
+//! spec 011: tresor's transports, from the same settings as the base's records and spans
+shared_ptr<TresorExporter> OtelState::BuildTresorExporter(DatabaseInstance &db, const string &changed,
+                                                          const Value &value) {
+	auto config = ConfigAfter(db, changed, value);
+	if (!HaveEndpoint(config, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")) {
+		return make_shared_ptr<NoneExporterOf<tresor::TresorAuditEvent>>();
+	}
+	return make_shared_ptr<OtlpTresorExporter>(config);
+}
+
+shared_ptr<TresorExporter> OtelState::BuildTresorTraceExporter(DatabaseInstance &db, const string &changed,
+                                                               const Value &value) {
+	auto config = ConfigAfter(db, changed, value);
+	if (!HaveEndpoint(config, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")) {
+		return make_shared_ptr<NoneExporterOf<tresor::TresorAuditEvent>>();
+	}
+	return make_shared_ptr<OtlpTresorTraceExporter>(config);
+}
+
 void OtelState::Reconfigure(DatabaseInstance &db, const string &changed, const Value &value) {
 	shared_ptr<OtelSink> current;
 	{
@@ -733,6 +923,15 @@ void OtelState::Reconfigure(DatabaseInstance &db, const string &changed, const V
 			lane->SetExporter(BuildTraceExporter(db, changed, value));
 		}
 		current->SetExporter(std::move(exporter));
+	}
+	auto tresor_now = TresorSink();
+	if (tresor_now) {
+		// spec 011: tresor's lanes ride the same transport settings
+		tresor_now->Records().SetExporter(BuildTresorExporter(db, changed, value));
+		auto lane = tresor_now->Spans();
+		if (lane) {
+			lane->SetExporter(BuildTresorTraceExporter(db, changed, value));
+		}
 	}
 }
 
@@ -836,6 +1035,27 @@ string OtelState::StatusJson(DatabaseInstance &db) {
 	} else {
 		json += ",\"traces\":null";
 	}
+	// spec 011: tresor's audit - attached or why not, and its lanes' numbers
+	auto tresor_now = TresorSink();
+	auto tresor_refused = TresorError();
+	json += ",\"tresor\":{\"enabled\":" + string(SettingBool(db, "acl_otel_tresor", true) ? "true" : "false");
+	json += ",\"attached\":" + string(tresor_now ? "true" : "false");
+	json += ",\"error\":" + (tresor_refused.empty() ? string("null") : JsonQuote(tresor_refused));
+	if (tresor_now) {
+		// names of their own (`sent`, `lost_*`): the status is matched by name, and the records' and
+		// spans' fields above must stay the only `exported` / `export_errors` / `received` in it
+		auto &records = tresor_now->Records().stats;
+		json += ",\"events\":" + std::to_string(tresor_now->received.load());
+		json += ",\"records\":{\"sent\":" + std::to_string(records.exported.load()) +
+		        ",\"lost_queue\":" + std::to_string(records.dropped_queue.load()) +
+		        ",\"lost_no_exporter\":" + std::to_string(records.dropped_no_exporter.load()) +
+		        ",\"lost_failed\":" + std::to_string(records.export_errors.load()) + "}";
+		auto lane = tresor_now->Spans();
+		json += ",\"spans\":" + string(lane ? "{\"sent\":" + std::to_string(lane->stats.exported.load()) +
+		                                          ",\"unsampled\":" + std::to_string(lane->stats.unsampled.load()) + "}"
+		                                    : "null");
+	}
+	json += "}";
 	json += "}";
 	return json;
 }

@@ -15,6 +15,7 @@
 #pragma once
 
 #include "acl_audit.hpp"
+#include "tresor_audit.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/storage/object_cache.hpp"
 
@@ -120,11 +121,13 @@ struct Stats {
 };
 
 //! What carries a batch out. spec 002 plugs OTLP in here; the extension without an endpoint carries
-//! a `NoneExporter` that drops and counts (R6.2: never silent).
-struct Exporter {
-	virtual ~Exporter() = default;
+//! a `NoneExporter` that drops and counts (R6.2: never silent). Of an event type: the base's events,
+//! and since spec 011 tresor's, travel the same lanes.
+template <class E>
+struct ExporterOf {
+	virtual ~ExporterOf() = default;
 	//! false with `error` set on a failure; the batch is then counted as failed, never retried here
-	virtual bool Export(const vector<acl::AuditEvent> &batch, string &error) = 0;
+	virtual bool Export(const vector<E> &batch, string &error) = 0;
 	virtual string Describe() const = 0;
 	//! false for the exporter that stands in while nothing is configured: its drops are counted
 	//! as "no exporter", not as export errors
@@ -133,8 +136,11 @@ struct Exporter {
 	}
 };
 
-struct NoneExporter : Exporter {
-	bool Export(const vector<acl::AuditEvent> &, string &) override {
+using Exporter = ExporterOf<acl::AuditEvent>;
+
+template <class E>
+struct NoneExporterOf : ExporterOf<E> {
+	bool Export(const vector<E> &, string &) override {
 		return false; // nothing is configured to receive them
 	}
 	string Describe() const override {
@@ -144,6 +150,7 @@ struct NoneExporter : Exporter {
 		return false;
 	}
 };
+using NoneExporter = NoneExporterOf<acl::AuditEvent>;
 
 //! spec 008: which decisions become spans. `off` allocates nothing; `linked` takes only an event
 //! carrying a usable traceparent (the span always has a parent, and a node nobody traces costs
@@ -178,20 +185,21 @@ void TraceIdFor(const string &node, int64_t seq, uint8_t out[16]);
 //! FlushNow asks the worker to drain what is queued now and waits for that, bounded by a timeout, so
 //! a stuck exporter cannot hold the caller. The sink runs one of these for the records (spec 002)
 //! and, while traces are on, one for the spans (spec 008): the same semantics, counted apart.
-class EventQueue {
+template <class E>
+class EventQueueOf {
 public:
-	EventQueue(idx_t queue_size, idx_t batch_size, int64_t flush_interval_ms, shared_ptr<Exporter> exporter);
-	~EventQueue();
+	EventQueueOf(idx_t queue_size, idx_t batch_size, int64_t flush_interval_ms, shared_ptr<ExporterOf<E>> exporter);
+	~EventQueueOf();
 
 	//! O(1): onto the queue, or a counted drop. Never counts `received` - the caller does, so a lane
 	//! can count what it was handed before its own policy thinned it.
-	void Push(const acl::AuditEvent &event);
+	void Push(const E &event);
 	//! true when what was queued at the call was exported (or failed and counted) within the bound,
 	//! false when the transport is still on it or the queue is stopping
 	bool FlushNow();
 	//! swap the transport (a setting changed); the worker sees it on its next batch, and a batch in
 	//! flight finishes on the transport it started with (the pointer is shared)
-	void SetExporter(shared_ptr<Exporter> exporter);
+	void SetExporter(shared_ptr<ExporterOf<E>> exporter);
 	string ExporterName();
 	string LastError();
 	idx_t QueueFill();
@@ -204,7 +212,7 @@ public:
 
 private:
 	void Run();
-	void ExportBatch(vector<acl::AuditEvent> &batch);
+	void ExportBatch(vector<E> &batch);
 
 	idx_t queue_size;
 	idx_t batch_size;
@@ -212,12 +220,16 @@ private:
 	std::mutex lock;
 	std::condition_variable wake;
 	std::condition_variable drained;
-	std::deque<acl::AuditEvent> queue;
-	shared_ptr<Exporter> exporter;
+	std::deque<E> queue;
+	shared_ptr<ExporterOf<E>> exporter;
 	bool stopping = false;
 	bool flush_requested = false;
 	std::thread worker;
 };
+using EventQueue = EventQueueOf<acl::AuditEvent>;
+//! spec 011: tresor's audit (duckdb-ext-common's TRSA 1), on lanes of the same shape
+using TresorQueue = EventQueueOf<tresor::TresorAuditEvent>;
+using TresorExporter = ExporterOf<tresor::TresorAuditEvent>;
 
 //! The sink (R1.5, R10.1): OnEvent hands the event to the metrics accumulators (spec 003), asks the
 //! sampler (spec 005), copies what survives onto the records' queue and - while traces are on and
@@ -276,6 +288,32 @@ private:
 	shared_ptr<EventQueue> spans;    // under `lock`, spec 008; null = traces off
 	TraceMode trace_mode = TraceMode::OFF;
 	bool session_spans = false;
+};
+
+//! Spec 011: the sink tresor delivers its audit to (TRSA 1, on tresor's delivery thread, in seq order).
+//! OnEvent copies the event onto the records' lane and - while traces are on and the event names the
+//! caller's sampled trace and a measured call - onto the spans', and returns. It owns everything it
+//! touches (tresor may call it once more after RemoveSink) and never reaches the object cache.
+class TresorOtelSink : public tresor::TresorAuditSink {
+	TresorQueue records;
+
+public:
+	TresorOtelSink(idx_t queue_size, idx_t batch_size, int64_t flush_interval_ms, shared_ptr<TresorExporter> exporter);
+	~TresorOtelSink() override;
+	void OnEvent(const tresor::TresorAuditEvent &event) override;
+	void Flush() override;
+	//! the span lane, or null while traces are off
+	void SetSpans(shared_ptr<TresorQueue> lane);
+	shared_ptr<TresorQueue> Spans();
+	TresorQueue &Records() {
+		return records;
+	}
+	void Stop();
+	std::atomic<int64_t> received {0};
+
+private:
+	std::mutex lock;
+	shared_ptr<TresorQueue> spans; // under `lock`
 };
 
 //! The session policy (R3): the rules as last set, first match wins; no rule = no opinion. The
@@ -366,8 +404,32 @@ public:
 	void ReconfigureSeries(DatabaseInstance &db, const string &changed, const Value &value, OtelMetrics &target);
 	//! R2.5's pair, on a running scrape
 	void SetHistogramSums(bool on);
+	//! spec 011: attach to (or leave) tresor's audit registry as `acl_otel_tresor` will be after this
+	//! SET; a no-op while the extension is stopped (Start reads the setting)
+	void ReconfigureTresor(DatabaseInstance &db, bool on);
+	//! spec 011: why tresor's registry was refused ('' when attached, off, or not tried)
+	string TresorError();
+	shared_ptr<TresorOtelSink> TresorSink();
 
 private:
+	// spec 011: tresor's audit. Attached at Start beside the base's registry (either load order: the
+	// registry is created by whoever reaches it first); a registry of another TRSA or hooks base
+	// version is refused and said so, like ACLA's.
+	shared_ptr<tresor::TresorAuditHooks> tresor_hooks; // under `lock`
+	shared_ptr<TresorOtelSink> tresor_sink;            // under `lock`
+	string tresor_error;                               // under `lock`
+	int64_t retired_tresor_losses = 0;                 // under `lock`
+	//! under `lock`: the registry, the sink with its transports, the span lane as traces stand
+	void AttachTresorLocked(DatabaseInstance &db);
+	//! off the registry; returns the sink to flush and stop outside the lock
+	shared_ptr<TresorOtelSink> DetachTresorLocked();
+	void RetireTresor(TresorOtelSink &ending);
+	shared_ptr<TresorExporter> BuildTresorExporter(DatabaseInstance &db, const string &changed, const Value &value);
+	shared_ptr<TresorExporter> BuildTresorTraceExporter(DatabaseInstance &db, const string &changed,
+	                                                    const Value &value);
+	//! the tresor span lane as `acl_otel_traces` will be after this SET, on `target` - lock-free
+	void ApplyTresorSpans(DatabaseInstance &db, const string &changed, const Value &value, TresorOtelSink &target);
+
 	//! lock-free (Start calls it under the lock); `names` receives the transport's header names
 	shared_ptr<Exporter> BuildExporter(DatabaseInstance &db, const string &changed, const Value &value,
 	                                   vector<string> &names);

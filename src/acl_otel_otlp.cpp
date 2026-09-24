@@ -491,7 +491,7 @@ void OtlpExporter::Fill(sdklogs::Recordable &record, const acl::AuditEvent &even
 	});
 }
 
-OtlpExporter::OtlpExporter(const OtlpConfig &config_p) : config(config_p) {
+OtlpExporter::OtlpExporter(const OtlpConfig &config_p, const string &scope_name) : config(config_p) {
 	SdkLog();
 	if (!OtlpConfig::ValidProtocol(config.protocol)) {
 		throw InvalidInputException("acl_otel_protocol accepts 'http/protobuf' or 'grpc', not '%s'", config.protocol);
@@ -499,7 +499,7 @@ OtlpExporter::OtlpExporter(const OtlpConfig &config_p) : config(config_p) {
 	auto protocol = config.ResolvedProtocol();
 	resource = make_uniq<opentelemetry::sdk::resource::Resource>(ResourceOf(config));
 	auto created = opentelemetry::sdk::instrumentationscope::InstrumentationScope::Create(
-	    "acl_otel", config.acl_otel_version.empty() ? "dev" : config.acl_otel_version);
+	    scope_name, config.acl_otel_version.empty() ? "dev" : config.acl_otel_version);
 	scope = unique_ptr<opentelemetry::sdk::instrumentationscope::InstrumentationScope>(created.release());
 	// a timeout set here wins; unset, the SDK's own (OTEL_EXPORTER_OTLP_TIMEOUT, else 10 s) stands
 	auto timeout = std::chrono::seconds(config.timeout_s);
@@ -550,13 +550,23 @@ OtlpExporter::~OtlpExporter() {
 }
 
 bool OtlpExporter::Export(const vector<acl::AuditEvent> &batch, string &error) {
+	return ExportFilled(
+	    batch.size(),
+	    [&](sdklogs::Recordable &record, idx_t i) {
+		    Fill(record, batch[i], config.claim_attributes, config.profile_plan);
+	    },
+	    error);
+}
+
+bool OtlpExporter::ExportFilled(idx_t count, const std::function<void(sdklogs::Recordable &, idx_t)> &fill,
+                                string &error) {
 	vector<std::unique_ptr<sdklogs::Recordable>> records;
-	records.reserve(batch.size());
-	for (auto &event : batch) {
+	records.reserve(count);
+	for (idx_t i = 0; i < count; i++) {
 		auto record = exporter->MakeRecordable();
 		record->SetResource(*resource);
 		record->SetInstrumentationScope(*scope);
-		Fill(*record, event, config.claim_attributes, config.profile_plan);
+		fill(*record, i);
 		records.push_back(std::move(record));
 	}
 	SdkLog().Take(); // what the SDK says about THIS export, not an earlier one
