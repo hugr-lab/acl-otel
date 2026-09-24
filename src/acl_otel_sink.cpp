@@ -23,8 +23,9 @@ int64_t NowMicros() {
 
 } // namespace
 
-EventQueue::EventQueue(idx_t queue_size_p, idx_t batch_size_p, int64_t flush_interval_ms_p,
-                       shared_ptr<Exporter> exporter_p)
+template <class E>
+EventQueueOf<E>::EventQueueOf(idx_t queue_size_p, idx_t batch_size_p, int64_t flush_interval_ms_p,
+                              shared_ptr<ExporterOf<E>> exporter_p)
     // a batch larger than the queue would never be reached, and Push would stop waking the worker
     // at all: the queue would fill, drop, and drain only on the flush timer. So a batch is at most a
     // queue.
@@ -32,16 +33,18 @@ EventQueue::EventQueue(idx_t queue_size_p, idx_t batch_size_p, int64_t flush_int
       batch_size(MinValue<idx_t>(batch_size_p == 0 ? 1 : batch_size_p, queue_size_p == 0 ? 1 : queue_size_p)),
       flush_interval_ms(flush_interval_ms_p <= 0 ? 1 : flush_interval_ms_p), exporter(std::move(exporter_p)) {
 	if (!exporter) {
-		exporter = make_shared_ptr<NoneExporter>();
+		exporter = make_shared_ptr<NoneExporterOf<E>>();
 	}
 	worker = std::thread([this] { Run(); });
 }
 
-EventQueue::~EventQueue() {
+template <class E>
+EventQueueOf<E>::~EventQueueOf() {
 	Stop();
 }
 
-void EventQueue::Push(const acl::AuditEvent &event) {
+template <class E>
+void EventQueueOf<E>::Push(const E &event) {
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		if (stopping || queue.size() >= queue_size) {
@@ -56,7 +59,8 @@ void EventQueue::Push(const acl::AuditEvent &event) {
 	wake.notify_one();
 }
 
-bool EventQueue::FlushNow() {
+template <class E>
+bool EventQueueOf<E>::FlushNow() {
 	std::unique_lock<std::mutex> guard(lock);
 	if (stopping) {
 		return false;
@@ -68,33 +72,38 @@ bool EventQueue::FlushNow() {
 	return !flush_requested && !stopping;
 }
 
-void EventQueue::SetExporter(shared_ptr<Exporter> exporter_p) {
-	shared_ptr<Exporter> previous;
+template <class E>
+void EventQueueOf<E>::SetExporter(shared_ptr<ExporterOf<E>> exporter_p) {
+	shared_ptr<ExporterOf<E>> previous;
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		previous = std::move(exporter);
-		exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoneExporter>();
+		exporter = exporter_p ? std::move(exporter_p) : make_shared_ptr<NoneExporterOf<E>>();
 	}
 	// `previous` dies HERE, outside the lock: an SDK exporter's destructor shuts its client down
 	// (bounded, but up to two seconds), and Push must not wait behind that on the audit thread
 }
 
-string EventQueue::ExporterName() {
+template <class E>
+string EventQueueOf<E>::ExporterName() {
 	std::lock_guard<std::mutex> guard(lock);
 	return exporter->Describe();
 }
 
-string EventQueue::LastError() {
+template <class E>
+string EventQueueOf<E>::LastError() {
 	std::lock_guard<std::mutex> guard(lock);
 	return stats.last_error;
 }
 
-idx_t EventQueue::QueueFill() {
+template <class E>
+idx_t EventQueueOf<E>::QueueFill() {
 	std::lock_guard<std::mutex> guard(lock);
 	return queue.size();
 }
 
-void EventQueue::Stop() {
+template <class E>
+void EventQueueOf<E>::Stop() {
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		if (stopping) {
@@ -109,13 +118,14 @@ void EventQueue::Stop() {
 	}
 }
 
-void EventQueue::Run() {
+template <class E>
+void EventQueueOf<E>::Run() {
 	std::unique_lock<std::mutex> guard(lock);
 	while (!stopping) {
 		wake.wait_for(guard, std::chrono::milliseconds(flush_interval_ms),
 		              [this] { return stopping || flush_requested || queue.size() >= batch_size; });
 		while (!queue.empty() && !stopping) {
-			vector<acl::AuditEvent> batch;
+			vector<E> batch;
 			while (!queue.empty() && batch.size() < batch_size) {
 				batch.push_back(std::move(queue.front()));
 				queue.pop_front();
@@ -134,9 +144,10 @@ void EventQueue::Run() {
 	queue.clear();
 }
 
-void EventQueue::ExportBatch(vector<acl::AuditEvent> &batch) {
+template <class E>
+void EventQueueOf<E>::ExportBatch(vector<E> &batch) {
 	string error;
-	shared_ptr<Exporter> transport;
+	shared_ptr<ExporterOf<E>> transport;
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		transport = exporter; // a batch finishes on the transport it started with
@@ -157,6 +168,10 @@ void EventQueue::ExportBatch(vector<acl::AuditEvent> &batch) {
 	std::lock_guard<std::mutex> guard(lock);
 	stats.last_error = error;
 }
+
+// the two event types the lanes carry: the base's (spec 001) and tresor's (spec 011)
+template class EventQueueOf<acl::AuditEvent>;
+template class EventQueueOf<tresor::TresorAuditEvent>;
 
 OtelSink::OtelSink(idx_t queue_size, idx_t batch_size, int64_t flush_interval_ms, shared_ptr<Exporter> exporter)
     : records(queue_size, batch_size, flush_interval_ms, std::move(exporter)) {

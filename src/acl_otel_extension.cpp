@@ -362,6 +362,18 @@ void LoadInternal(ExtensionLoader &loader) {
 		    OtelState::Of(*context.db)->ReconfigureTraces(*context.db, "acl_otel_session_spans", parameter);
 	    },
 	    SetScope::GLOBAL);
+	config.AddExtensionOption(
+	    "acl_otel_tresor",
+	    "acl_otel: carry tresor's audit (the secrets service's client, duckdb-ext-common TRSA 1) out as OTel "
+	    "logs, spans under the caller's trace, and tresor's counters (spec 011); nothing is attached where "
+	    "tresor never loads events",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(true),
+	    [](ClientContext &context, SetScope scope, Value &parameter) {
+		    RequireGlobal("acl_otel_tresor", scope);
+		    OtelState::Of(*context.db)
+		        ->ReconfigureTresor(*context.db, parameter.IsNull() || parameter.GetValue<bool>());
+	    },
+	    SetScope::GLOBAL);
 	// the opt-in series (R2.3): each takes effect at once, on the running scrape
 	auto series_setting = [&](const char *name, const char *description, const LogicalType &type, const Value &fallback,
 	                          set_option_callback_t callback) {

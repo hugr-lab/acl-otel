@@ -237,14 +237,14 @@ void OtlpTraceExporter::FillOperatorSpan(sdktrace::Recordable &out, const acl::A
 	out.SetAttribute("acl.seq", event.seq);
 }
 
-OtlpTraceExporter::OtlpTraceExporter(const OtlpConfig &config_p) : config(config_p) {
+OtlpTraceExporter::OtlpTraceExporter(const OtlpConfig &config_p, const string &scope_name) : config(config_p) {
 	if (!OtlpConfig::ValidProtocol(config.protocol)) {
 		throw InvalidInputException("acl_otel_protocol accepts 'http/protobuf' or 'grpc', not '%s'", config.protocol);
 	}
 	auto protocol = config.ResolvedProtocol();
 	resource = make_uniq<opentelemetry::sdk::resource::Resource>(ResourceOf(config));
 	auto created = opentelemetry::sdk::instrumentationscope::InstrumentationScope::Create(
-	    "acl_otel", config.acl_otel_version.empty() ? "dev" : config.acl_otel_version);
+	    scope_name, config.acl_otel_version.empty() ? "dev" : config.acl_otel_version);
 	scope = unique_ptr<opentelemetry::sdk::instrumentationscope::InstrumentationScope>(created.release());
 	auto timeout = std::chrono::seconds(config.timeout_s);
 	if (protocol == "grpc") {
@@ -312,6 +312,24 @@ bool OtlpTraceExporter::Export(const vector<acl::AuditEvent> &batch, string &err
 			}
 		}
 	}
+	return Send(spans, error);
+}
+
+bool OtlpTraceExporter::ExportFilled(idx_t count, const std::function<void(sdktrace::Recordable &, idx_t)> &fill,
+                                     string &error) {
+	vector<std::unique_ptr<sdktrace::Recordable>> spans;
+	spans.reserve(count);
+	for (idx_t i = 0; i < count; i++) {
+		auto span = exporter->MakeRecordable();
+		span->SetResource(*resource);
+		span->SetInstrumentationScope(*scope);
+		fill(*span, i);
+		spans.push_back(std::move(span));
+	}
+	return Send(spans, error);
+}
+
+bool OtlpTraceExporter::Send(vector<std::unique_ptr<sdktrace::Recordable>> &spans, string &error) {
 	TakeSdkError(); // what the SDK says about THIS export, not an earlier one (spec 002's handler)
 	auto result =
 	    exporter->Export(opentelemetry::nostd::span<std::unique_ptr<sdktrace::Recordable>>(spans.data(), spans.size()));

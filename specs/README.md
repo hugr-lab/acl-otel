@@ -46,3 +46,4 @@ specs are the shareable distillation of that work.
 | [008](008-otlp-traces/spec.md) | OTLP traces - the decision as a span, hung under the request that caused it | implemented |
 | [009](009-execution-profile/spec.md) | the execution profile - the span everybody wanted, the sources as events, the tree as a record, the histograms | implemented |
 | [010](010-ext-common/spec.md) | the contract from the shared repository - duckdb-ext-common replaces the duckdb-acl submodule | implemented |
+| [011](011-tresor-audit/spec.md) | tresor's audit as OTel - the record, the span under the caller's trace, tresor's counters | implemented |

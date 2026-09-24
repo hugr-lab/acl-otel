@@ -99,10 +99,15 @@ void FillAttributes(const acl::AuditEvent &event, const vector<string> &claims,
 
 class OtlpExporter : public Exporter {
 public:
-	//! throws InvalidInputException on a config the SDK refuses (a bad protocol, a bad endpoint)
-	explicit OtlpExporter(const OtlpConfig &config);
+	//! throws InvalidInputException on a config the SDK refuses (a bad protocol, a bad endpoint).
+	//! `scope` is the instrumentation scope the records carry: `acl_otel`, or `tresor` (spec 011).
+	explicit OtlpExporter(const OtlpConfig &config, const string &scope = "acl_otel");
 	~OtlpExporter() override;
 	bool Export(const vector<acl::AuditEvent> &batch, string &error) override;
+	//! the transport alone: `count` records, each filled by `fill` - what spec 011's tresor
+	//! exporter sends through the same client, resource and error handling
+	bool ExportFilled(idx_t count, const std::function<void(opentelemetry::sdk::logs::Recordable &, idx_t)> &fill,
+	                  string &error);
 	string Describe() const override;
 	//! the header NAMES the transport carries (R9.2: never a value)
 	vector<string> HeaderNames() const;
@@ -152,8 +157,12 @@ bool SpanIsError(const acl::AuditEvent &event);
 //! an operator configures one endpoint and gets the third signal, fed by the sink's span lane.
 class OtlpTraceExporter : public Exporter {
 public:
-	//! throws InvalidInputException on a config the SDK refuses (a bad protocol, a bad endpoint)
-	explicit OtlpTraceExporter(const OtlpConfig &config);
+	//! throws InvalidInputException on a config the SDK refuses (a bad protocol, a bad endpoint);
+	//! `scope` as OtlpExporter's
+	explicit OtlpTraceExporter(const OtlpConfig &config, const string &scope = "acl_otel");
+	//! the transport alone, one span per item (spec 011)
+	bool ExportFilled(idx_t count, const std::function<void(opentelemetry::sdk::trace::Recordable &, idx_t)> &fill,
+	                  string &error);
 	~OtlpTraceExporter() override;
 	//! one span per event; false with `error` set when an event with no measured duration reached
 	//! the lane (the sink's gate never lets one through) or the transport failed
@@ -171,11 +180,56 @@ public:
 	                             const acl::AuditPlanNode &node, const SpanIdentity &parent);
 
 private:
+	bool Send(vector<std::unique_ptr<opentelemetry::sdk::trace::Recordable>> &spans, string &error);
 	OtlpConfig config;
 	string description;
 	std::unique_ptr<opentelemetry::sdk::trace::SpanExporter> exporter; // the SDK factory hands out std::
 	unique_ptr<opentelemetry::sdk::resource::Resource> resource;
 	unique_ptr<opentelemetry::sdk::instrumentationscope::InstrumentationScope> scope;
+};
+
+//===--------------------------------------------------------------------===//
+// spec 011: tresor's audit (TRSA 1) as OTLP - the record, the span, the two transports
+//===--------------------------------------------------------------------===//
+
+//! WARN for a refusal or a failure (`denied`, `error`), INFO otherwise
+OtelSeverity SeverityOf(const tresor::TresorAuditEvent &event);
+//! `tresor <kind> <outcome>` + `: <reason>` - tresor's own words, never material
+string BodyOf(const tresor::TresorAuditEvent &event);
+//! every field a `tresor.` attribute, present only when the event carries it; `tresor.duration_us`
+//! only when a call was made (>= 0)
+void FillTresorAttributes(const tresor::TresorAuditEvent &event,
+                          const std::function<void(const char *, const opentelemetry::common::AttributeValue &)> &set);
+void FillTresorRecord(opentelemetry::sdk::logs::Recordable &record, const tresor::TresorAuditEvent &event);
+//! Is the event a span: the caller's traceparent parses and the service call was measured
+//! (duration_us >= 0). `unsampled`: it would be, but the caller's flags say the trace is not recorded.
+bool TresorSpanCandidate(const tresor::TresorAuditEvent &event, bool &unsampled);
+//! the span's own id, derived like spec 009's: SpanIdFor(node, seq) with tresor's salt, so it never
+//! collides with a decision span of the same node and seq (tresor numbers its own events)
+void TresorSpanId(const string &node, const tresor::TresorAuditEvent &event, uint8_t out[8]);
+//! `tresor.<kind>`, [ts_us - duration_us, ts_us], a child of the caller's span, kError on denied/error
+void FillTresorSpan(opentelemetry::sdk::trace::Recordable &span, const tresor::TresorAuditEvent &event,
+                    const string &node);
+
+class OtlpTresorExporter : public TresorExporter {
+public:
+	explicit OtlpTresorExporter(const OtlpConfig &config);
+	bool Export(const vector<tresor::TresorAuditEvent> &batch, string &error) override;
+	string Describe() const override;
+
+private:
+	OtlpExporter transport; // the logs' client, scope `tresor`
+};
+
+class OtlpTresorTraceExporter : public TresorExporter {
+public:
+	explicit OtlpTresorTraceExporter(const OtlpConfig &config);
+	bool Export(const vector<tresor::TresorAuditEvent> &batch, string &error) override;
+	string Describe() const override;
+
+private:
+	OtlpTraceExporter transport; // the spans' client, scope `tresor`
+	string node;
 };
 
 } // namespace acl_otel
