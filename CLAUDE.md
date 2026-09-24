@@ -180,13 +180,15 @@ While two duckdb lines are alive both halves of the cache are hot. The bucket wa
 R2's 10 GB free tier when this was written; the moment to clean up is when a line is retired - one
 deliberate purge of its archives, not a rule.
 
-## The one decision still open
+## No decision open
 
-Spec 004 (per-connection logging): the extension cannot see the base's sessions, because the
-contract carries events, counters and gauges and a session list is none of the three. The spec draft
-holds the three ways out - a sessions reader in `AuditHooks` plus a `CONTRACT_VERSION` bump
-(recommended), a table function that opens a second connection, or nothing - and is waiting for the
-owner rather than for code.
+Spec 004 (per-connection logging) was the one: the extension cannot see the base's sessions, because
+the contract carries events, counters and gauges and a session list is none of the three. It closed
+on 2026-09-15 by a fourth option none of the three drafts had listed - the base carries the two
+missing facts itself, `acl_sessions()` says the `level` in force and its `level_source` (`instance`
+/ `policy` / `override`), and nothing of ours was needed (spec 069's addendum; our spec 004 records
+the residue). The beside-acl file asserts it. Do not reopen it with a `SessionsReader` in the
+contract or a nested `Connection`: both were weighed and lost.
 
 ## Reference repos (local)
 
