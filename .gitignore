@@ -14,9 +14,9 @@ vcpkg_installed/
 .vscode/*.log
 
 # the docs site (website/): installed and built locally, deployed by pages.yml
-website/node_modules/
+node_modules/
+.docusaurus/
 website/build/
-website/.docusaurus/
 website/versioned_docs/
 website/versioned_sidebars/
 website/versions.json
