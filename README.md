@@ -11,6 +11,10 @@ object cache (spec 069 of duckdb-acl). The contract it meets is
 [`specs/069-audit/extension-requirements.md`](https://github.com/hugr-lab/duckdb-acl/blob/main/specs/069-audit/extension-requirements.md)
 in the base; what is built so far is in [`specs/`](specs/README.md).
 
+**Documentation: [hugr-lab.github.io/acl-otel](https://hugr-lab.github.io/acl-otel/)**, built from
+[`website/docs/`](website/docs/): getting started, levels and rules, logs, metrics, traces, tresor's
+audit, and the reference.
+
 ## Status
 
 - **Spec 001 (the wiring)**: the sink and the level policy attach to the base's registry in either
