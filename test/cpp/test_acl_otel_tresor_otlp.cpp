@@ -324,7 +324,11 @@ int main() {
 				one->OnEvent(event); // what tresor's delivery thread does
 			}
 		}
-		sink->Flush();
+		// the operator's flushes drain tresor's lanes too: a status read right after counts them sent
+		Check(state->Flush(), "acl_otel_flush drains the records, tresor's included");
+		Check(sink->Records().stats.exported.load() == 6, "tresor's six records are counted sent at once");
+		Check(state->FlushTraces(), "acl_otel_traces_flush drains the spans, tresor's included");
+		Check(sink->Spans()->stats.exported.load() == 3, "and its three spans");
 		Check(Eventually([&] { return receiver.Records().size() == 6; }), "six records");
 		Check(Eventually([&] { return receiver.Spans().size() == 3; }),
 		      "three spans: the lookup, the refused write, the grant - not the cached, the login, the unsampled");

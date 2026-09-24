@@ -520,7 +520,13 @@ bool OtelState::FlushTraces() {
 		current = sink;
 	}
 	auto lane = current ? current->Traces() : nullptr;
-	return lane && lane->FlushNow();
+	bool flushed = lane && lane->FlushNow();
+	auto tresor_now = TresorSink();
+	auto tresor_lane = tresor_now ? tresor_now->Spans() : nullptr;
+	if (tresor_lane) {
+		flushed = tresor_lane->FlushNow() && flushed; // spec 013: tresor's spans drain with acl's
+	}
+	return flushed;
 }
 
 //! spec 008: `acl_otel_traces` and `acl_otel_session_spans` as they will be after this SET, on the
@@ -629,14 +635,21 @@ string OtelState::AttachError() {
 
 bool OtelState::Flush() {
 	shared_ptr<OtelSink> current;
+	shared_ptr<TresorOtelSink> tresor_now;
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		if (!attached) {
 			return false;
 		}
 		current = sink;
+		tresor_now = tresor_sink;
 	}
-	return current && current->FlushNow();
+	bool flushed = current && current->FlushNow();
+	if (tresor_now) {
+		// spec 013: tresor's records drain with acl's, so a status read after the flush counts them sent
+		flushed = tresor_now->Records().FlushNow() && flushed;
+	}
+	return flushed;
 }
 
 void OtelState::SetRulesJson(const string &json) {

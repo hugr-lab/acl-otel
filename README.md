@@ -84,9 +84,9 @@ denies every `acl_`-prefixed function to a principal, and every setting here ref
 | `acl_otel_status()` | one JSON document: attached, the transports, the queue, every counter, the metrics object, health, where the rules came from, the span lane |
 | `acl_otel_healthy()` | the readiness probe's boolean - see `acl_otel_strict` |
 | `acl_otel_start()` / `acl_otel_stop()` | attach to the base's registry, or detach and flush; idempotent, and the only way out (duckdb never unloads an extension) |
-| `acl_otel_flush()` | export the queued events now and wait for them, bounded |
+| `acl_otel_flush()` | export the queued events now and wait for them, bounded - tresor's records too (spec 011) |
 | `acl_otel_metrics_flush()` | export one metrics tick now |
-| `acl_otel_traces_flush()` | export the queued spans now and wait for them, bounded; false while traces are off |
+| `acl_otel_traces_flush()` | export the queued spans now and wait for them, bounded - tresor's too; false while traces are off |
 | `acl_otel_rules_refresh()` | read the central rules table now; answers how many rules are in force |
 | `acl_otel_create_rules_table()` | create that table, once, by hand, where `acl_otel_rules_table` points |
 | `acl_otel_version()` | the build |

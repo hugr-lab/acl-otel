@@ -128,3 +128,19 @@ clean.
 - tresor publishes no gauges yet. When it does, they join the scrape the same way.
 - A real tresor loadable beside acl and acl-otel end to end belongs to tresor's CI (actor.sql) and to
   a beside-tresor step here, once tresor publishes an artifact built against our duckdb pin.
+
+## Addendum (2026-09-24): the operator's flushes drain tresor's lanes
+
+tresor-d3 ran it live against Keycloak, the reference server and the local stack. Loki and Tempo
+received tresor's records and its span, and the trace's `tresor.lookup` sat beside `acl SELECT`. But
+`acl_otel_status().tresor` read right after `acl_otel_flush()` showed `records.sent: 0`, because the
+flushes drained only acl's lanes, and tresor's exported on their own timer.
+
+`acl_otel_flush()` now also drains tresor's records, and `acl_otel_traces_flush()` its spans. The
+test checks `sent` right after each flush; without the fix that check fails.
+
+Also noted, and left as it is: `tresor.lookup` is a sibling of `acl SELECT` under the caller's span,
+not its child. Both take the parent from the statement's traceparent. The decision span covers only
+the rewrite and ends before execution, when tresor's lookup happens. Nesting the lookup would need acl
+to publish a span of the execution as `AclSessionView.traceparent`. That span exists only when it is
+exported, so this is a design question for later, not a defect.
