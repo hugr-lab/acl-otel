@@ -17,8 +17,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # directory, the same header the base compiles) - the extension compiles against
 # it and links nothing of acl's (a loadable is dlopen'd RTLD_LOCAL); the level
 # rules are parsed with duckdb's bundled yyjson
-include_directories(src/include duckdb-ext-common/contracts duckdb-ext-common/hooks
-                    duckdb/third_party/yyjson/include)
+include_directories(src/include duckdb-ext-common/contracts
+                    duckdb-ext-common/hooks duckdb/third_party/yyjson/include)
 
 # the OpenTelemetry C++ SDK (spec 002): the OTLP exporters over HTTP/protobuf
 # and gRPC for the three signals, from vcpkg
@@ -76,7 +76,8 @@ function(acl_otel_sdk_test NAME SOURCE)
 endfunction()
 acl_otel_sdk_test(acl_otel_test_otlp test/cpp/test_acl_otel_otlp.cpp)
 # spec 011: tresor's audit through the same transports, against a fake receiver
-acl_otel_sdk_test(acl_otel_test_tresor_otlp test/cpp/test_acl_otel_tresor_otlp.cpp)
+acl_otel_sdk_test(acl_otel_test_tresor_otlp
+                  test/cpp/test_acl_otel_tresor_otlp.cpp)
 # spec 003's twin: the metrics transport against fake receivers of its own
 acl_otel_sdk_test(acl_otel_test_metrics_otlp
                   test/cpp/test_acl_otel_metrics_otlp.cpp)
