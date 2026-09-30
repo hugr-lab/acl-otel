@@ -697,18 +697,21 @@ idx_t OtelState::RefreshRules(DatabaseInstance &db) {
 	auto text = [](const Value &value) {
 		return value.IsNull() ? string() : value.ToString();
 	};
+	// the rows built once: since duckdb's ResultFormat a result has no GetValue of its own, and
+	// Collection().GetValue rebuilds every row on each call
+	auto rows = result->Collection().GetRows();
 	for (idx_t row = 0; row < result->RowCount(); row++) {
 		if (parsed.size() >= NumericCast<idx_t>(cap)) {
 			trouble = "the rules table holds more than acl_otel_max_rules (" + std::to_string(cap) + ") rows";
 			break;
 		}
-		auto seq = result->GetValue(0, row);
+		auto seq = rows.GetValue(0, row);
 		try {
-			parsed.push_back(RuleFromRow(text(result->GetValue(1, row)), text(result->GetValue(2, row)),
-			                             text(result->GetValue(3, row)), text(result->GetValue(4, row)),
-			                             text(result->GetValue(5, row)),
+			parsed.push_back(RuleFromRow(text(rows.GetValue(1, row)), text(rows.GetValue(2, row)),
+			                             text(rows.GetValue(3, row)), text(rows.GetValue(4, row)),
+			                             text(rows.GetValue(5, row)),
 			                             seq.IsNull() ? NumericCast<int64_t>(row) : seq.GetValue<int64_t>(),
-			                             with_profile ? text(result->GetValue(6, row)) : string()));
+			                             with_profile ? text(rows.GetValue(6, row)) : string()));
 		} catch (std::exception &ex) {
 			trouble = ErrorData(ex).RawMessage();
 			break;
