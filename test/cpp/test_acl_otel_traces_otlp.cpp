@@ -414,7 +414,7 @@ string Scalar(Connection &con, const string &sql) {
 	if (result->HasError()) {
 		return "ERROR: " + result->GetError();
 	}
-	return result->RowCount() ? result->GetValue(0, 0).ToString() : string("<no rows>");
+	return result->RowCount() ? result->Collection().GetValue(0, 0).ToString() : string("<no rows>");
 }
 
 void Exec(Connection &con, const string &sql) {
