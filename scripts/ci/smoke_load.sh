@@ -21,7 +21,7 @@ trap 'rm -rf "$tmp"' EXIT
 cp "$ext_abs" "$tmp/acl_otel.duckdb_extension"
 cd "$tmp"
 
-out="$("$duckdb_abs" -unsigned -csv -noheader -c "
+out="$("$duckdb_abs" -unsigned -no-agent -csv -noheader -c "
 LOAD '$tmp/acl_otel.duckdb_extension';
 SELECT 'version=' || coalesce(acl_otel_version(), '<null>');
 SELECT 'attached=' || (acl_otel_status() LIKE '{\"attached\":true,%');
@@ -33,7 +33,7 @@ grep -q '^stopped=true$' <<<"$out" || { echo "smoke_load: stop did not detach:" 
 beside="beside acl: not checked (ACL_EXT not set)"
 if [ -n "${ACL_EXT:-}" ]; then
 	[ -f "$ACL_EXT" ] || { echo "smoke_load: ACL_EXT names no file: $ACL_EXT" >&2; exit 1; }
-	both="$("$duckdb_abs" -unsigned -csv -noheader -c "
+	both="$("$duckdb_abs" -unsigned -no-agent -csv -noheader -c "
 LOAD '$ACL_EXT';
 LOAD '$tmp/acl_otel.duckdb_extension';
 SELECT 'both=' || (acl_otel_status() LIKE '%\"acl_loaded\":true%');
