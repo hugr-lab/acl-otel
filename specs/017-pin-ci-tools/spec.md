@@ -1,6 +1,6 @@
 # Spec 017: pin extension-ci-tools to f3fccb8, and /GF- for clang-cl
 
-- **Status**: implemented
+- **Status**: superseded by 019
 - **Date**: 2026-10-08
 - **Found by**: the distribution build on main d689ef5 (run 37767298423), windows_amd64.
 - **Temporary**: the pin goes once upstream fixes extension-ci-tools#431; `/GF-` goes once the ports are clang-cl builds.
