@@ -49,3 +49,4 @@ specs are the shareable distillation of that work.
 | [011](011-tresor-audit/spec.md) | tresor's audit as OTel - the record, the span under the caller's trace, tresor's counters | implemented |
 | [012](012-docs-site/spec.md) | the docs site - website/ (Docusaurus), as duckdb-acl's | implemented |
 | [018](018-openlineage/spec.md) | OpenLineage transport - the node's lineage facts to a lineage backend, the key from tresor | implemented |
+| [019](019-unpin-ci-tools/spec.md) | extension-ci-tools main again - #432 made clang-cl opt-in | implemented |
