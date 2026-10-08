@@ -1,6 +1,8 @@
 # Spec 018: OpenLineage transport - a node's lineage facts to a lineage backend
 
-- **Status**: draft
+- **Status**: accepted
+- **Decisions (owner, 2026-10-08)**: the key from tresor as well as the environment; `NAMESPACE` sent as
+  a `DatasetEvent` with a `datasource` facet; the bootstrap re-send on by default
 - **Date**: 2026-10-08
 - **Contract**: duckdb-ext-common v0.11.0, `contracts/acl_audit.hpp` `CONTRACT_VERSION` 3 (its spec 014)
 - **Producer**: duckdb-acl spec 107 (PR #188) - the `lineage` event kind
@@ -53,7 +55,7 @@ same duckdb pin. The contract check stays as it is: one version on both sides, o
 - They never come from a setting, the same rule as R9.2 for OTLP.
 - The API key comes from `OPENLINEAGE_API_KEY` in the environment, sent as `Authorization: Bearer`.
   That is OpenLineage's own convention, so an orchestrator configures it like any other client.
-- Optionally the key comes from a **tresor secret** (`acl_otel_lineage_secret = '<name>'`). It is read
+- Or the key comes from a **tresor secret** (it wins over the environment when set) (`acl_otel_lineage_secret = '<name>'`). It is read
   at use through the attached tresor, on the node's own connection, and cached for at most
   `acl_otel_lineage_secret_ttl` seconds (300). The key then rotates in the secrets service without a
   restart, is bound to the node rather than to any user, and is written nowhere on the node.
@@ -133,12 +135,6 @@ same duckdb pin. The contract check stays as it is: one version on both sides, o
   they all speak.
 - **The node POSTing itself.** duckdb-acl spec 107 keeps transport out of the base: the BUSL
   extension owns delivery, the base only produces facts.
-
-## Open questions for the owner
-
-1. The key: environment only, or also from tresor (`acl_otel_lineage_secret`), as proposed?
-2. `NAMESPACE` as a `DatasetEvent` with a `datasource` facet, or not sent at all?
-3. The bootstrap re-send on start: on by default?
 
 ## Follow-ups
 
