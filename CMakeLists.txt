@@ -37,7 +37,8 @@ set(ACL_OTEL_SDK_LIBS
     opentelemetry-cpp::logs
     opentelemetry-cpp::metrics
     opentelemetry-cpp::trace
-    opentelemetry-cpp::resources)
+    opentelemetry-cpp::resources
+    opentelemetry-cpp::http_client_curl)
 
 # everything but the entry point: what the loadable is, and what the SDK-linked
 # tests compile in
@@ -51,7 +52,10 @@ set(ACL_OTEL_LIB_SOURCES
     src/acl_otel_otlp_metrics.cpp
     src/acl_otel_sampling.cpp
     src/acl_otel_traces.cpp
-    src/acl_otel_otlp_traces.cpp)
+    src/acl_otel_otlp_traces.cpp
+    src/acl_otel_lineage.cpp
+    src/acl_otel_lineage_http.cpp
+    src/acl_otel_lineage_key.cpp)
 set(EXTENSION_SOURCES src/acl_otel_extension.cpp ${ACL_OTEL_LIB_SOURCES})
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

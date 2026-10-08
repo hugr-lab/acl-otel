@@ -4,6 +4,7 @@
 #include "acl_otel.hpp"
 #include "acl_otel_metrics.hpp"
 #include "acl_otel_otlp.hpp"
+#include "acl_otel_lineage.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/error_data.hpp"
@@ -108,7 +109,22 @@ bool OtelState::Attached() {
 }
 
 bool OtelState::Start(DatabaseInstance &db) {
-	std::lock_guard<std::mutex> guard(lock);
+	bool started;
+	LineagePlan plan;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		started = StartLocked(db);
+		plan = std::move(pending_lineage);
+		pending_lineage = LineagePlan();
+	}
+	FinishLineage(plan); // spec 018: the waits and the bootstrap after the lock
+	if (started && plan.bootstrap) {
+		StartBootstrap(db);
+	}
+	return started;
+}
+
+bool OtelState::StartLocked(DatabaseInstance &db) {
 	if (attached) {
 		return false;
 	}
@@ -159,11 +175,235 @@ bool OtelState::Start(DatabaseInstance &db) {
 		sink->SetMetrics(metrics);
 		metrics->Start(hooks);
 	}
+	// spec 018: the lineage lane, before the sink goes on the registry - so the base asks for lineage
+	// from its first event - and the bootstrap after it, when a backend is configured
+	try {
+		pending_lineage = ApplyLineage(db, string(), Value(), *sink);
+		lineage_error.clear();
+	} catch (std::exception &ex) {
+		lineage_error = ErrorData(ex).RawMessage(); // a URL refused at load: no lane, and the status says why
+	}
 	hooks->AddSink(sink);
 	hooks->SetSessionPolicy(policy);
 	attached = true;
 	AttachTresorLocked(db); // spec 011
 	return true;
+}
+
+//===--------------------------------------------------------------------===//
+// spec 018: the OpenLineage lane
+//===--------------------------------------------------------------------===//
+
+//! under `lock`, and never blocking: decides the lane and builds the transport, leaving every wait
+//! (a flush, a worker's join, a curl client's teardown) to FinishLineage, after the lock
+OtelState::LineagePlan OtelState::ApplyLineage(DatabaseInstance &db, const string &changed, const Value &value,
+                                               OtelSink &target) {
+	LineagePlan plan;
+	auto text = [&](const char *name, const string &fallback) {
+		if (changed == name) {
+			return value.IsNull() ? fallback : value.ToString();
+		}
+		return SettingString(db, name, fallback);
+	};
+	auto number = [&](const char *name, int64_t fallback) {
+		if (changed == name) {
+			return value.IsNull() ? fallback : value.GetValue<int64_t>();
+		}
+		return SettingInt64(db, name, fallback);
+	};
+	auto flag = [&](const char *name, bool fallback) {
+		if (changed == name) {
+			return value.IsNull() ? fallback : value.GetValue<bool>();
+		}
+		return SettingBool(db, name, fallback);
+	};
+	auto base = text("acl_otel_lineage", "");
+	if (base.empty()) {
+		const char *env = std::getenv("OPENLINEAGE_URL");
+		base = env ? string(env) : string();
+	}
+	if (LineageUrlHasUserinfo(base)) {
+		// a credential in a URL would sit in a setting (or the environment's URL) and go out as Basic
+		throw InvalidInputException("acl_otel_lineage: the backend's URL carries user:password@ - a credential is "
+		                            "never part of a URL here; the key goes in OPENLINEAGE_API_KEY or "
+		                            "acl_otel_lineage_secret");
+	}
+	auto lane = target.Lineage();
+	if (base.empty()) {
+		target.SetLineage(nullptr);
+		plan.ending = std::move(lane);
+		plan.retired = std::move(lineage_exporter);
+		lineage_url.clear();
+		return plan;
+	}
+	auto url = LineageUrl(base, text("acl_otel_lineage_endpoint", "api/v1/lineage"));
+	LineageRenderOptions options;
+#ifdef EXT_VERSION_ACL_OTEL
+	options.producer = string("https://github.com/hugr-lab/acl-otel/tree/") + EXT_VERSION_ACL_OTEL;
+#else
+	options.producer = "https://github.com/hugr-lab/acl-otel";
+#endif
+	options.physical = flag("acl_otel_lineage_physical", true);
+	if (!lineage_stats) {
+		lineage_stats = make_shared_ptr<LineageDeliveryStats>();
+	}
+	auto exporter = make_shared_ptr<OpenLineageExporter>(
+	    url, number("acl_otel_lineage_timeout", 5) * 1000, options,
+	    MakeSdkLineagePoster(SettingString(db, "acl_otel_certificate", "")),
+	    MakeLineageKeyReader(db.shared_from_this(), text("acl_otel_lineage_secret", ""),
+	                         number("acl_otel_lineage_secret_ttl", 300)),
+	    lineage_stats);
+	if (lane) {
+		lane->SetExporter(exporter); // a batch in flight finishes on the transport it started with
+	} else {
+		auto queue = number("acl_otel_lineage_queue_size", 10000);
+		auto batch = number("acl_otel_lineage_batch_size", 64);
+		auto flush = SettingInt64(db, "acl_otel_flush_interval", 5);
+		lane = make_shared_ptr<LineageQueue>(NumericCast<idx_t>(MaxValue<int64_t>(queue, 1)),
+		                                     NumericCast<idx_t>(MaxValue<int64_t>(batch, 1)),
+		                                     MaxValue<int64_t>(flush, 1) * 1000, exporter);
+		target.SetLineage(lane);
+	}
+	plan.retired = std::move(lineage_exporter);
+	lineage_exporter = exporter;
+	plan.bootstrap = url != lineage_url && flag("acl_otel_lineage_bootstrap", true);
+	lineage_url = url;
+	return plan;
+}
+
+//! after the lock: a lane that went is flushed (bounded), its transport cancelled - a black-holed
+//! backend's retries never hold a stop - and its worker joined; a retired transport is released here
+void OtelState::FinishLineage(LineagePlan &plan) {
+	if (plan.ending) {
+		plan.ending->FlushNow();
+		if (plan.retired) {
+			plan.retired->Cancel();
+		}
+		plan.ending->Stop();
+	}
+	plan.ending.reset();
+	plan.retired.reset();
+}
+
+void OtelState::ReconfigureLineage(DatabaseInstance &db, const string &changed, const Value &value) {
+	LineagePlan plan;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if (!sink) {
+			return; // stopped: Start reads the settings again
+		}
+		plan = ApplyLineage(db, changed, value, *sink); // may throw: the SET is then refused
+	}
+	FinishLineage(plan);
+	if (plan.bootstrap) {
+		StartBootstrap(db);
+	}
+}
+
+bool OtelState::FlushLineage() {
+	shared_ptr<OtelSink> current;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		current = sink;
+	}
+	auto lane = current ? current->Lineage() : nullptr;
+	return lane && lane->FlushNow();
+}
+
+void OtelState::JoinBootstrap() {
+	std::lock_guard<std::mutex> guard(bootstrap_lock);
+	JoinBootstrapLocked();
+}
+
+void OtelState::JoinBootstrapLocked() {
+	if (!bootstrap_worker.joinable()) {
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> guard(bootstrap_status->lock);
+		bootstrap_status->stop = true;
+	}
+	bootstrap_status->wake.notify_all();
+	if (bootstrap_worker.get_id() == std::this_thread::get_id()) {
+		bootstrap_worker.detach(); // the instance's teardown ran on the bootstrap itself: it ends by itself
+	} else {
+		bootstrap_worker.join();
+	}
+}
+
+string OtelState::BootstrapText() {
+	shared_ptr<BootstrapStatus> status;
+	{
+		std::lock_guard<std::mutex> guard(bootstrap_lock);
+		status = bootstrap_status;
+	}
+	std::lock_guard<std::mutex> guard(status->lock);
+	return status->text;
+}
+
+//! The base's own re-send, until it can answer: at load acl may not be loaded yet, its policy
+//! catalog not chosen, its lineage not switched on - a node's bootstrap script does those after the
+//! LOADs. Tried every 5 s for 5 minutes; then the status says it gave up (`acl_lineage_resend()` by
+//! hand does the same). The thread holds the instance only while it asks.
+void OtelState::StartBootstrap(DatabaseInstance &db) {
+	std::lock_guard<std::mutex> guard(bootstrap_lock);
+	JoinBootstrapLocked();
+	auto status = make_shared_ptr<BootstrapStatus>();
+	status->text = "running";
+	bootstrap_status = status;
+	weak_ptr<DatabaseInstance> weak = db.shared_from_this();
+	bootstrap_worker = std::thread([status, weak]() {
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+		string waiting;
+		for (;;) {
+			string outcome;
+			bool done = false;
+			{
+				auto instance = weak.lock();
+				if (!instance) {
+					return;
+				}
+				try {
+					// a service connection of the node: the operator's (acl_lineage_resend is never a
+					// principal's)
+					Connection con(*instance);
+					auto level = con.Query("SELECT current_setting('acl_lineage_level')");
+					if (level->HasError()) {
+						waiting = "acl is not loaded";
+					} else if (level->Collection().GetValue(0, 0).ToString() != "on") {
+						waiting = "acl_lineage_level is off";
+					} else {
+						auto result = con.Query("SELECT acl_lineage_resend()");
+						if (!result->HasError()) {
+							outcome = "sent " + result->Collection().GetValue(0, 0).ToString();
+							done = true;
+						} else if (result->GetError().find("policy catalog") != string::npos) {
+							waiting = "no policy catalog yet";
+						} else {
+							outcome = "error: " + result->GetError();
+							done = true;
+						}
+					}
+				} catch (std::exception &ex) {
+					outcome = "error: " + ErrorData(ex).RawMessage();
+					done = true;
+				}
+			}
+			std::unique_lock<std::mutex> guard(status->lock);
+			if (done) {
+				status->text = outcome;
+				return;
+			}
+			if (std::chrono::steady_clock::now() >= deadline) {
+				status->text = "gave up: " + waiting;
+				return;
+			}
+			status->text = "waiting: " + waiting;
+			if (status->wake.wait_for(guard, std::chrono::seconds(5), [&]() { return status->stop; })) {
+				return;
+			}
+		}
+	});
 }
 
 //===--------------------------------------------------------------------===//
@@ -590,9 +830,11 @@ void OtelState::ReconfigureTraces(DatabaseInstance &db, const string &changed, c
 
 bool OtelState::Stop() {
 	StopRulesReader(); // first: a thread that queries a database must never outlive the database
+	JoinBootstrap();   // spec 018: the same rule
 	shared_ptr<OtelSink> ending;
 	shared_ptr<OtelMetrics> ending_metrics;
 	shared_ptr<TresorOtelSink> ending_tresor;
+	shared_ptr<OpenLineageExporter> ending_lineage;
 	{
 		std::lock_guard<std::mutex> guard(lock);
 		if (!attached) {
@@ -607,7 +849,9 @@ bool OtelState::Stop() {
 		if (metrics) {
 			ending_metrics = std::move(metrics);
 		}
-		ending_tresor = DetachTresorLocked(); // spec 011
+		ending_tresor = DetachTresorLocked();         // spec 011
+		ending_lineage = std::move(lineage_exporter); // spec 018: a restart is a new backend, bootstrapped again
+		lineage_url.clear();
 	}
 	if (ending_tresor) {
 		RetireTresor(*ending_tresor);
@@ -619,6 +863,9 @@ bool OtelState::Stop() {
 	// outside the lock: the worker may be mid-export, and Stop waits for it
 	if (ending) {
 		ending->Flush();
+		if (ending_lineage) {
+			ending_lineage->Cancel(); // spec 018: what the flush could not send is not waited for
+		}
 		ending->Stop();
 		auto lane = ending->Traces();
 		if (lane) {
@@ -1050,6 +1297,41 @@ string OtelState::StatusJson(DatabaseInstance &db) {
 		json += ",\"last_error\":" + (last_error.empty() ? string("null") : JsonQuote(last_error)) + "}";
 	} else {
 		json += ",\"traces\":null";
+	}
+	// spec 018: the lineage lane - null while off; names of its own (`sent`, `lost_*`), as tresor's
+	auto lineage_lane = current ? current->Lineage() : nullptr;
+	shared_ptr<OpenLineageExporter> lineage_now;
+	string lineage_to;
+	string lineage_refused;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		lineage_now = lineage_exporter;
+		lineage_to = lineage_url;
+		lineage_refused = lineage_error;
+	}
+	if (lineage_lane && lineage_now) {
+		auto &delivery = *lineage_now->stats;
+		auto &queued = lineage_lane->stats;
+		auto bootstrap = BootstrapText();
+		auto error = lineage_now->LastError();
+		json += ",\"lineage\":{\"url\":" + JsonQuote(MaskUserinfo(lineage_to));
+		json += ",\"key\":" + JsonQuote(lineage_now->KeySource());
+		json += ",\"events\":" + std::to_string(queued.received.load());
+		json += ",\"queue_fill\":" + std::to_string(lineage_lane->QueueFill());
+		json += ",\"sent\":" + std::to_string(delivery.sent.load());
+		json += ",\"rejected\":" + std::to_string(delivery.rejected.load());
+		json += ",\"retried\":" + std::to_string(delivery.retried.load());
+		json += ",\"lost_queue\":" + std::to_string(queued.dropped_queue.load());
+		json += ",\"lost_retries\":" + std::to_string(delivery.lost_retries.load());
+		json += ",\"lost_key\":" + std::to_string(delivery.lost_key.load());
+		json += ",\"lost_stopped\":" + std::to_string(delivery.lost_stopped.load());
+		json += ",\"parent_dropped\":" + std::to_string(delivery.parent_dropped.load());
+		json += ",\"bootstrap\":" + (bootstrap.empty() ? string("null") : JsonQuote(bootstrap));
+		json += ",\"last_error\":" + (error.empty() ? string("null") : JsonQuote(error)) + "}";
+	} else if (!lineage_refused.empty()) {
+		json += ",\"lineage\":{\"error\":" + JsonQuote(lineage_refused) + "}";
+	} else {
+		json += ",\"lineage\":null";
 	}
 	// spec 011: tresor's audit - attached or why not, and its lanes' numbers
 	auto tresor_now = TresorSink();

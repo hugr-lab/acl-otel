@@ -9,7 +9,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Signals',
       collapsed: false,
-      items: ['logs', 'metrics', 'traces', 'tresor'],
+      items: ['logs', 'metrics', 'traces', 'tresor', 'lineage'],
     },
     'reference',
     'deployment',

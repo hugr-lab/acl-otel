@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hugr-lab.github.io/acl-otel/schemas/AclRunFacet.json",
+  "title": "AclRunFacet",
+  "description": "The `duckdb_acl` run facet - duckdb-acl via acl-otel (spec 018): who ran a statement on an ACL node, as far as the node's operator lets it say, and how exact the run's lineage is.",
+  "allOf": [
+    {"$ref": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunFacet"},
+    {
+      "type": "object",
+      "properties": {
+        "client": {"type": "string", "description": "the door the statement came through: flight, quack, session or gateway (admin / operator for the node's own statements)"},
+        "issuer": {"type": "string", "description": "the identity provider that verified the principal"},
+        "roles": {"type": "array", "items": {"type": "string"}, "description": "the principal's roles"},
+        "subject": {"type": "string", "description": "the token's sub - only when the node's acl_lineage_identity is 'subject'"},
+        "node_group": {"type": "string", "description": "the node's resource group"},
+        "approximate": {"type": "boolean", "description": "some edges could not be derived exactly (a table function, a source that does not bind)"},
+        "truncated": {"type": "boolean", "description": "edges were cut at the node's acl_lineage_max_edges"}
+      }
+    }
+  ]
+}

@@ -139,6 +139,13 @@ proves two loadables share a registry has proven nothing.
   (operators as child spans, labelled `cumulative_thread_time` - opt-in: not an interval). A rule
   (JSON or a table row) may carry `profile` beside or instead of `level`: `OtelPolicy::ProfileFor`
   answers the base's per-session profile level from the rules that carry one.
+- **Lineage to OpenLineage** (spec 018): a fourth lane, `LineageQueue`, set on the sink only while
+  `acl_otel_lineage` (or `OPENLINEAGE_URL`) names a backend - `WantsLineage()` follows it, so a node
+  not exporting lineage never has the base make it. A `lineage` event goes there alone. Rendering is
+  SDK-free (`acl_otel_lineage.cpp`), delivery is the SDK's curl client (`_http.cpp`, path without a
+  leading slash), the key is `OPENLINEAGE_API_KEY` or an `openlineage` secret in the tresor catalog
+  (`_key.cpp`, never the node's memory storage, cached for a TTL). Bootstrap = `acl_lineage_resend()`
+  on a service connection. e2e: `test/e2e/marquez/run.sh` (docker, also in CI).
 - **tresor's audit rides the same lanes** (spec 011): `TresorAuditHooks::Reach` (duckdb-ext-common
   TRSA 1, on `hooks/ext_hooks.hpp`) at Start beside the base's registry, refused and said on another
   TRSA or hooks base version; `EventQueueOf<E>` / `ExporterOf<E>` are the lanes of either event type;

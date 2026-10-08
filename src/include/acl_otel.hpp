@@ -54,7 +54,9 @@ LevelRule RuleFromRow(const string &role, const string &subject, const string &i
                       const string &level, int64_t seq, const string &profile = string());
 bool RuleMatches(const LevelRule &rule, const acl::Principal &principal, const string &door);
 
-class OtelMetrics;     // spec 003, acl_otel_metrics.hpp
+class OtelMetrics;         // spec 003, acl_otel_metrics.hpp
+class OpenLineageExporter; // spec 018, acl_otel_lineage.hpp
+struct LineageDeliveryStats;
 class MetricsExporter; // its transport seam
 struct MetricPoint;    // one number as a transport receives it
 
@@ -227,6 +229,14 @@ private:
 	std::thread worker;
 };
 using EventQueue = EventQueueOf<acl::AuditEvent>;
+//! spec 018: one lineage fact as its lane carries it - the producer's payload (shared, never copied
+//! deep) and the time a rendering needs
+struct LineageEvent {
+	shared_ptr<const acl::AuditLineage> lineage;
+	int64_t ts_us = 0;
+};
+using LineageQueue = EventQueueOf<LineageEvent>;
+using LineageExporter = ExporterOf<LineageEvent>;
 //! spec 011: tresor's audit (duckdb-ext-common's TRSA 1), on lanes of the same shape
 using TresorQueue = EventQueueOf<tresor::TresorAuditEvent>;
 using TresorExporter = ExporterOf<tresor::TresorAuditEvent>;
@@ -280,8 +290,17 @@ public:
 	Stats &stats {records.stats};
 	//! spec 009: how many `profile` events the base handed this sink, whatever became of them
 	std::atomic<int64_t> profiles_received {0};
+	//! spec 018: the lineage lane, or null while lineage is off. Only while it is set does the sink
+	//! ask the base for `lineage` events (WantsLineage), which then go there alone - never a record.
+	void SetLineage(shared_ptr<LineageQueue> lane);
+	shared_ptr<LineageQueue> Lineage();
+	bool WantsLineage() const override {
+		return lineage_on.load();
+	}
 
 private:
+	std::atomic<bool> lineage_on {false};
+	shared_ptr<LineageQueue> lineage; // under `lock`, spec 018
 	std::mutex lock;
 	shared_ptr<OtelMetrics> metrics; // under `lock`, spec 003
 	shared_ptr<Sampler> sampler;     // under `lock`, spec 005; null = keep everything
@@ -410,8 +429,47 @@ public:
 	//! spec 011: why tresor's registry was refused ('' when attached, off, or not tried)
 	string TresorError();
 	shared_ptr<TresorOtelSink> TresorSink();
+	//! spec 018: the lineage lane from the `acl_otel_lineage*` settings - as they will be after this
+	//! SET - on the running sink: built, retuned, or torn down; a new backend gets the bootstrap
+	void ReconfigureLineage(DatabaseInstance &db, const string &changed = string(), const Value &value = Value());
+	//! spec 018: drain the lineage lane now (acl_otel_lineage_flush); false when lineage is off or
+	//! the bound ran out
+	bool FlushLineage();
 
 private:
+	// spec 018: the lineage lane's transport (for the status), its numbers (kept across rebuilds), the
+	// backend it was built for (a change of it re-sends the static picture), why a URL was refused
+	shared_ptr<OpenLineageExporter> lineage_exporter; // under `lock`
+	shared_ptr<LineageDeliveryStats> lineage_stats;   // under `lock`
+	string lineage_url;                               // under `lock`
+	string lineage_error;                             // under `lock`
+	//! what ApplyLineage leaves for after the lock: a lane to flush and stop, a transport to cancel or
+	//! release, whether to bootstrap
+	struct LineagePlan {
+		shared_ptr<LineageQueue> ending;
+		shared_ptr<OpenLineageExporter> retired;
+		bool bootstrap = false;
+	};
+	LineagePlan pending_lineage; // under `lock`: Start's plan, carried out after it
+	LineagePlan ApplyLineage(DatabaseInstance &db, const string &changed, const Value &value, OtelSink &target);
+	void FinishLineage(LineagePlan &plan);
+	bool StartLocked(DatabaseInstance &db);
+	//! the bootstrap: a thread of its own, asking the base to re-send until it can; its status shared
+	//! with it (the instance's teardown can run on it, after which it touches nothing of ours). Its
+	//! own lock, never held with `lock`.
+	struct BootstrapStatus {
+		std::mutex lock;
+		std::condition_variable wake;
+		bool stop = false;
+		string text;
+	};
+	std::mutex bootstrap_lock;
+	shared_ptr<BootstrapStatus> bootstrap_status = make_shared_ptr<BootstrapStatus>(); // under bootstrap_lock
+	std::thread bootstrap_worker;                                                      // under bootstrap_lock
+	void StartBootstrap(DatabaseInstance &db);
+	void JoinBootstrap();
+	void JoinBootstrapLocked();
+	string BootstrapText();
 	// spec 011: tresor's audit. Attached at Start beside the base's registry (either load order: the
 	// registry is created by whoever reaches it first); a registry of another TRSA or hooks base
 	// version is refused and said so, like ACLA's.
