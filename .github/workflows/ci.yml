@@ -143,7 +143,8 @@ jobs:
           scripts/ci/assert_ran.sh traces.log 0 0
 
       # spec 018: the node's lineage reaches a real OpenLineage backend - Marquez in docker, the
-      # base's artifact beside ours: definitions, tags, a source, a run under its parent
+      # base's artifact beside ours: definitions, tags, a source, a run under its parent. Linux
+      # only: a macOS runner has no docker
       - name: Lineage e2e (Marquez)
         env:
           ACL_EXT: ${{ github.workspace }}/base/acl.duckdb_extension
@@ -231,13 +232,6 @@ jobs:
           scripts/ci/assert_ran.sh contract.log 0 0
           build/release/extension/acl_otel/acl_otel_test_traces_otlp 2>&1 | tee traces.log
           scripts/ci/assert_ran.sh traces.log 0 0
-
-      # spec 018: the node's lineage reaches a real OpenLineage backend - Marquez in docker, the
-      # base's artifact beside ours: definitions, tags, a source, a run under its parent
-      - name: Lineage e2e (Marquez)
-        env:
-          ACL_EXT: ${{ github.workspace }}/base/acl.duckdb_extension
-        run: test/e2e/marquez/run.sh
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7
