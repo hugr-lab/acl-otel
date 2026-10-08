@@ -48,3 +48,4 @@ specs are the shareable distillation of that work.
 | [010](010-ext-common/spec.md) | the contract from the shared repository - duckdb-ext-common replaces the duckdb-acl submodule | implemented |
 | [011](011-tresor-audit/spec.md) | tresor's audit as OTel - the record, the span under the caller's trace, tresor's counters | implemented |
 | [012](012-docs-site/spec.md) | the docs site - website/ (Docusaurus), as duckdb-acl's | implemented |
+| [018](018-openlineage/spec.md) | OpenLineage transport - the node's lineage facts to a lineage backend, the key from tresor | implemented |

@@ -11,6 +11,7 @@
 #include "acl_otel_extension.hpp"
 
 #include "acl_otel.hpp"
+#include "acl_otel_lineage.hpp"
 #include "acl_otel_metrics.hpp"
 #include "acl_otel_otlp.hpp"
 #include "duckdb/common/exception.hpp"
@@ -69,6 +70,12 @@ void AclOtelMetricsFlushFunc(DataChunk &args, ExpressionState &state, Vector &re
 void AclOtelTracesFlushFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &db = InstanceOf(state);
 	result.Reference(Value::BOOLEAN(OtelState::Of(db)->FlushTraces()), count_t(args.size()));
+}
+
+//! spec 018: the queued lineage events, sent now (bounded)
+void AclOtelLineageFlushFunc(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &db = InstanceOf(state);
+	result.Reference(Value::BOOLEAN(OtelState::Of(db)->FlushLineage()), count_t(args.size()));
 }
 
 //! spec 007: create our own schema and table in the database the operator named. The one statement
@@ -164,6 +171,33 @@ void SeriesSet(ClientContext &context, SetScope scope, Value &parameter) {
 		acl_otel::ParseSeriesAllowlist(parameter.IsNull() ? string() : parameter.ToString()); // refused at the SET
 	}
 	OtelState::Of(*context.db)->ReconfigureSeries(*context.db, setting, parameter);
+}
+
+//! spec 018's settings: one template instance per setting, as the transport's
+enum class LineageSetting : uint8_t {
+	URL,
+	ENDPOINT,
+	TIMEOUT,
+	PHYSICAL,
+	SECRET,
+	SECRET_TTL,
+	BOOTSTRAP,
+	QUEUE_SIZE,
+	BATCH_SIZE
+};
+const char *const LINEAGE_SETTING_NAMES[] = {
+    "acl_otel_lineage",           "acl_otel_lineage_endpoint",   "acl_otel_lineage_timeout",
+    "acl_otel_lineage_physical",  "acl_otel_lineage_secret",     "acl_otel_lineage_secret_ttl",
+    "acl_otel_lineage_bootstrap", "acl_otel_lineage_queue_size", "acl_otel_lineage_batch_size"};
+
+template <LineageSetting SETTING>
+void LineageSet(ClientContext &context, SetScope scope, Value &parameter) {
+	const char *setting = LINEAGE_SETTING_NAMES[static_cast<uint8_t>(SETTING)];
+	RequireGlobal(setting, scope);
+	if (SETTING == LineageSetting::QUEUE_SIZE || SETTING == LineageSetting::BATCH_SIZE) {
+		return; // the lane's shape: taken at the next acl_otel_start, as the records' lane's
+	}
+	OtelState::Of(*context.db)->ReconfigureLineage(*context.db, setting, parameter);
 }
 
 void LoadInternal(ExtensionLoader &loader) {
@@ -374,6 +408,43 @@ void LoadInternal(ExtensionLoader &loader) {
 		        ->ReconfigureTresor(*context.db, parameter.IsNull() || parameter.GetValue<bool>());
 	    },
 	    SetScope::GLOBAL);
+	// spec 018: the OpenLineage lane. Each takes effect at once on the running sink (the lane is
+	// rebuilt), and a new backend gets the static picture again. The key is never a setting: the
+	// environment's OPENLINEAGE_API_KEY, or a secret of the node's secrets service named here.
+	auto lineage_setting = [&](const char *name, const char *description, const LogicalType &type,
+	                           const Value &fallback, set_option_callback_t callback) {
+		config.AddExtensionOption(name, description, type, fallback, callback, SetScope::GLOBAL);
+	};
+	lineage_setting("acl_otel_lineage",
+	                "acl_otel: the OpenLineage backend's base URL (Marquez, DataHub, OpenMetadata, ...); '' = the "
+	                "OPENLINEAGE_URL environment, and with neither lineage is not exported (spec 018)",
+	                LogicalType::VARCHAR, Value(""), LineageSet<LineageSetting::URL>);
+	lineage_setting("acl_otel_lineage_endpoint",
+	                "acl_otel: the path under the base URL events are POSTed to - Marquez's api/v1/lineage "
+	                "(default), DataHub's openapi/openlineage/api/v1/lineage",
+	                LogicalType::VARCHAR, Value("api/v1/lineage"), LineageSet<LineageSetting::ENDPOINT>);
+	lineage_setting("acl_otel_lineage_timeout", "acl_otel: seconds one POST of a lineage event may take",
+	                LogicalType::BIGINT, Value::BIGINT(5), LineageSet<LineageSetting::TIMEOUT>);
+	lineage_setting("acl_otel_lineage_physical",
+	                "acl_otel: send physical datasets and their edges (default true; the node has its own switch "
+	                "too, acl_lineage_physical)",
+	                LogicalType::BOOLEAN, Value::BOOLEAN(true), LineageSet<LineageSetting::PHYSICAL>);
+	lineage_setting("acl_otel_lineage_secret",
+	                "acl_otel: '[service.]name' of an openlineage secret (api_key) in the node's secrets service - "
+	                "rotated there, read at use; '' = the OPENLINEAGE_API_KEY environment",
+	                LogicalType::VARCHAR, Value(""), LineageSet<LineageSetting::SECRET>);
+	lineage_setting("acl_otel_lineage_secret_ttl", "acl_otel: seconds a key read from the secret is reused",
+	                LogicalType::BIGINT, Value::BIGINT(300), LineageSet<LineageSetting::SECRET_TTL>);
+	lineage_setting("acl_otel_lineage_bootstrap",
+	                "acl_otel: on start and on a new backend, ask the node to re-send every definition "
+	                "(acl_lineage_resend) so the backend starts with the whole catalog",
+	                LogicalType::BOOLEAN, Value::BOOLEAN(true), LineageSet<LineageSetting::BOOTSTRAP>);
+	lineage_setting("acl_otel_lineage_queue_size", "acl_otel: lineage events the lane holds before it drops",
+	                LogicalType::BIGINT, Value::BIGINT(10000), LineageSet<LineageSetting::QUEUE_SIZE>);
+	lineage_setting("acl_otel_lineage_batch_size", "acl_otel: lineage events the lane takes per wake",
+	                LogicalType::BIGINT, Value::BIGINT(64), LineageSet<LineageSetting::BATCH_SIZE>);
+	acl_otel::RegisterLineageSecretType(loader);
+
 	// the opt-in series (R2.3): each takes effect at once, on the running scrape
 	auto series_setting = [&](const char *name, const char *description, const LogicalType &type, const Value &fallback,
 	                          set_option_callback_t callback) {
@@ -413,6 +484,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	register_scalar("acl_otel_metrics_flush", LogicalType::BOOLEAN, AclOtelMetricsFlushFunc);
 	// spec 008: export the queued spans now and wait for them (bounded); false while traces are off
 	register_scalar("acl_otel_traces_flush", LogicalType::BOOLEAN, AclOtelTracesFlushFunc);
+	// spec 018: send the queued lineage now and wait for it (bounded); false while lineage is off
+	register_scalar("acl_otel_lineage_flush", LogicalType::BOOLEAN, AclOtelLineageFlushFunc);
 	// spec 006: what a readiness probe reads, without parsing the status
 	register_scalar("acl_otel_healthy", LogicalType::BOOLEAN, AclOtelHealthyFunc);
 	// spec 007: the central rules - read now, or create the table an operator will write them into

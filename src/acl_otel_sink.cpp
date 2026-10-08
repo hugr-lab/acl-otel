@@ -172,6 +172,7 @@ void EventQueueOf<E>::ExportBatch(vector<E> &batch) {
 // the two event types the lanes carry: the base's (spec 001) and tresor's (spec 011)
 template class EventQueueOf<acl::AuditEvent>;
 template class EventQueueOf<tresor::TresorAuditEvent>;
+template class EventQueueOf<LineageEvent>; // spec 018
 
 OtelSink::OtelSink(idx_t queue_size, idx_t batch_size, int64_t flush_interval_ms, shared_ptr<Exporter> exporter)
     : records(queue_size, batch_size, flush_interval_ms, std::move(exporter)) {
@@ -228,7 +229,40 @@ bool OtelSink::SessionSpans() {
 	return session_spans;
 }
 
+void OtelSink::SetLineage(shared_ptr<LineageQueue> lane) {
+	shared_ptr<LineageQueue> previous;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		previous = std::move(lineage);
+		lineage = std::move(lane);
+		lineage_on = lineage != nullptr;
+	}
+	// `previous` dies outside the lock, as a span lane does
+}
+
+shared_ptr<LineageQueue> OtelSink::Lineage() {
+	std::lock_guard<std::mutex> guard(lock);
+	return lineage;
+}
+
 void OtelSink::OnEvent(const acl::AuditEvent &event) {
+	if (event.kind == "lineage") {
+		// spec 018: a lineage fact is no decision - not a record, not a metric, not a span; its own
+		// lane, or nowhere (a base that delivers one after the lane went is answered by nobody)
+		shared_ptr<LineageQueue> lane;
+		{
+			std::lock_guard<std::mutex> guard(lock);
+			lane = lineage;
+		}
+		if (lane && event.lineage) {
+			lane->stats.received++;
+			LineageEvent copy;
+			copy.lineage = event.lineage;
+			copy.ts_us = event.ts_us;
+			lane->Push(copy);
+		}
+		return;
+	}
 	stats.received++;
 	if (event.kind == "profile") {
 		profiles_received++; // spec 009
@@ -277,6 +311,10 @@ void OtelSink::Flush() {
 	if (lane) {
 		lane->FlushNow();
 	}
+	auto lineage_lane = Lineage();
+	if (lineage_lane) {
+		lineage_lane->FlushNow();
+	}
 }
 
 bool OtelSink::FlushNow() {
@@ -304,6 +342,10 @@ void OtelSink::Stop() {
 	auto lane = Traces();
 	if (lane) {
 		lane->Stop(); // outside our lock: Stop joins the lane's worker, which may be mid-export
+	}
+	auto lineage_lane = Lineage();
+	if (lineage_lane) {
+		lineage_lane->Stop();
 	}
 }
 

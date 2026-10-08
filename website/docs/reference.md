@@ -15,6 +15,7 @@ nothing.
 | `acl_otel_flush()` | export the queued events now and wait for them, bounded - tresor's records too (spec 011) |
 | `acl_otel_metrics_flush()` | export one metrics tick now |
 | `acl_otel_traces_flush()` | export the queued spans now and wait for them, bounded - tresor's too; false while traces are off |
+| `acl_otel_lineage_flush()` | spec 018: send the queued lineage events now and wait for them, bounded; false while lineage is off |
 | `acl_otel_rules_refresh()` | read the central rules table now; answers how many rules are in force |
 | `acl_otel_create_rules_table()` | create that table, once, by hand, where `acl_otel_rules_table` points |
 | `acl_otel_version()` | the build |
@@ -43,6 +44,10 @@ nothing.
 | `acl_otel_session_spans` | `false` | also a span per session, from open to close, by how it ended |
 | `acl_otel_tresor` | `true` | spec 011: carry tresor's audit (the secrets service's client, TRSA 1) the same way - a record per event (scope `tresor`, `tresor.*` attributes, WARN for denied/error), a `tresor.<kind>` span under the caller's sampled trace when the event measured a call (behind `acl_otel_traces`), and tresor's counters (`tresor.events`, `tresor.audit.*`) in the scrape |
 | `acl_otel_profile_plan` / `_profile_spans` | `true` / `false` | spec 009, once the base profiles (`acl_profile_level`): whether a profile's plan travels (the record's body, the `acl.operator` span events), and the plan as child spans of the execution span, labelled cumulative thread time |
+| `acl_otel_lineage` / `_endpoint` | `''` / `api/v1/lineage` | spec 018: the OpenLineage backend's base URL (`''` = `OPENLINEAGE_URL`, neither = off) and the path events are POSTed to - see [Lineage](lineage.md) |
+| `acl_otel_lineage_timeout` / `_physical` / `_bootstrap` | `5` / `true` / `true` | seconds per POST; send physical datasets; re-send the node's definitions on start and on a new backend |
+| `acl_otel_lineage_secret` / `_secret_ttl` | `''` / `300` | `[service.]name` of an `openlineage` secret in the node's secrets service (`''` = `OPENLINEAGE_API_KEY`), and the seconds a key read from it is reused |
+| `acl_otel_lineage_queue_size` / `_batch_size` | `10000` / `64` | the lineage lane's queue and batch (at the next `acl_otel_start()`) |
 | `acl_otel_rules_table` / `_rules_interval` / `_max_rules` | `''` / `30` / `1000` | the table the level rules are read from, how often, and how many at most; a rule (JSON or a row) may carry `profile` = `off` / `sampled` / `all` beside or instead of `level` - the base's per-session profile level (spec 074), a `profile VARCHAR` column the operator adds to the table |
 
 A setting at its default means that the standard OpenTelemetry environment decides

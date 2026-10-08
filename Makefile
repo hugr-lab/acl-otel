@@ -58,6 +58,11 @@ $(TEST_CPP_DIR)/test_acl_otel_health: src/acl_otel_sampling.cpp src/include/acl_
 $(TEST_CPP_DIR)/test_acl_otel_sink: src/acl_otel_sink.cpp src/acl_otel_metrics.cpp src/acl_otel_traces.cpp \
 	src/include/acl_otel.hpp
 $(TEST_CPP_DIR)/test_acl_otel_metrics: TEST_CPP_EXTRA := src/acl_otel_metrics.cpp duckdb/third_party/yyjson/yyjson.cpp
+# spec 018: the rendering and the delivery policy - the SDK's HTTP client is not linked (a fake posts)
+$(TEST_CPP_DIR)/test_acl_otel_lineage: TEST_CPP_EXTRA := src/acl_otel_lineage.cpp duckdb/third_party/yyjson/yyjson.cpp
+$(TEST_CPP_DIR)/test_acl_otel_lineage: src/acl_otel_lineage.cpp src/include/acl_otel_lineage.hpp src/include/acl_otel.hpp
+$(TEST_CPP_DIR)/test_acl_otel_lineage_key: TEST_CPP_EXTRA := src/acl_otel_lineage_key.cpp
+$(TEST_CPP_DIR)/test_acl_otel_lineage_key: src/acl_otel_lineage_key.cpp src/include/acl_otel_lineage.hpp
 $(TEST_CPP_DIR)/test_acl_otel_metrics: src/acl_otel_metrics.cpp src/include/acl_otel_metrics.hpp
 
 $(TEST_CPP_DIR)/%: test/cpp/%.cpp $(TEST_CPP_DUCKDB_LIB)
