@@ -367,7 +367,12 @@ struct Rendering {
 			                     ",\"query\":" + Quote(lineage.sql) +
 			                     (lineage.dialect.empty() ? string() : ",\"dialect\":" + Quote(lineage.dialect)) + "}");
 		}
-		string out = "{\"eventType\":" + Quote(lineage.event_type == "RUN_FAIL" ? "FAIL" : "COMPLETE");
+		// spec 020: a write whose transaction rolled back is OpenLineage's ABORT (duckdb-acl spec 112)
+		auto type = lineage.event_type == "RUN_FAIL"    ? "FAIL"
+		            : lineage.event_type == "RUN_ABORT" ? "ABORT"
+		                                                : "COMPLETE";
+		bool wrote = lineage.event_type == "RUN_COMPLETE";
+		string out = "{\"eventType\":" + Quote(type);
 		out += ",\"eventTime\":" + Quote(time) + ",\"producer\":" + Quote(options.producer);
 		out += ",\"schemaURL\":" + Quote(string(SPEC) + "#/$defs/RunEvent");
 		out += ",\"run\":{\"runId\":" + Quote(lineage.run_id) + ",\"facets\":{";
@@ -380,8 +385,9 @@ struct Rendering {
 			out += string(i ? "," : "") + job_facets[i];
 		}
 		out += "}},\"inputs\":" + DatasetList(lineage.inputs, false);
-		// a failed write wrote nothing: its outputs are named, without lineage or a lifecycle change
-		out += ",\"outputs\":" + DatasetList(lineage.outputs, lineage.event_type != "RUN_FAIL") + "}";
+		// a failed or rolled-back write wrote nothing: its outputs are named, without lineage or a
+		// lifecycle change
+		out += ",\"outputs\":" + DatasetList(lineage.outputs, wrote) + "}";
 		return out;
 	}
 
@@ -469,7 +475,7 @@ string RenderOpenLineage(const LineageEvent &event, const LineageRenderOptions &
 	auto &lineage = *event.lineage;
 	Rendering rendering(lineage, options);
 	auto time = LineageEventTime(event.ts_us);
-	if (lineage.event_type == "RUN_COMPLETE" || lineage.event_type == "RUN_FAIL") {
+	if (lineage.event_type == "RUN_COMPLETE" || lineage.event_type == "RUN_FAIL" || lineage.event_type == "RUN_ABORT") {
 		if (lineage.run_id.empty() || lineage.job_name.empty()) {
 			return string();
 		}

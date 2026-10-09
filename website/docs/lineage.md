@@ -21,7 +21,7 @@ Lineage runs on its own lane, like the other signals. Nothing a statement does w
 
 | the node's fact | OpenLineage |
 | --- | --- |
-| a write (INSERT / UPDATE / DELETE / MERGE / CTAS, Flight ingest) | `RunEvent` `COMPLETE` with `columnLineage` on its output; a failed one is `FAIL`, its output named without lineage |
+| a write (INSERT / UPDATE / DELETE / MERGE / CTAS, Flight ingest) | `RunEvent` `COMPLETE` with `columnLineage` on its output; a failed one is `FAIL`, and one whose transaction rolled back is `ABORT` (duckdb-acl spec 112) - both name their output without lineage |
 | a SELECT declared as a step of an external job | `RunEvent` with its inputs |
 | a definition: a virtual table, view or table function | `DatasetEvent` with `schema`, `columnLineage`, `tags`, `lifecycleStateChange`, `datasetType` |
 | a grant that changes what roles see | `DatasetEvent` with the new `tags` |
