@@ -157,6 +157,17 @@ void TestRunEvent() {
 	Check(fail.Str("/outputs/0/name") == "sink" && fail.At("/outputs/0/facets/columnLineage") == nullptr,
 	      "a failed write names its output, without lineage");
 
+	// spec 020: a write whose transaction rolled back (duckdb-acl spec 112) is an ABORT, wrote nothing
+	event.lineage = [] {
+		auto aborted = Run();
+		aborted->event_type = "RUN_ABORT";
+		return aborted;
+	}();
+	Json abort(RenderOpenLineage(event, Options()));
+	Check(abort.Str("/eventType") == "ABORT", "RUN_ABORT is an ABORT event");
+	Check(abort.Str("/outputs/0/name") == "sink" && abort.At("/outputs/0/facets/columnLineage") == nullptr,
+	      "a rolled-back write names its output, without lineage");
+
 	// a parent run id that is not a UUID: ParentRunFacet needs one - left out, and said so
 	event.lineage = [] {
 		auto loose = Run();

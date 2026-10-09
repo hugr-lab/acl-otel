@@ -25,7 +25,7 @@ struct LineageRenderOptions {
 	bool physical = true; // acl_otel_lineage_physical: false drops physical datasets and their edges
 };
 
-//! The OpenLineage JSON of one fact: a RunEvent for RUN_COMPLETE / RUN_FAIL, a DatasetEvent for
+//! The OpenLineage JSON of one fact: a RunEvent for RUN_COMPLETE / RUN_FAIL / RUN_ABORT, a DatasetEvent for
 //! DATASET (the defined dataset) and for NAMESPACE (a source, with a `datasource` facet). Empty when
 //! there is nothing to send (no payload, an unknown kind, every dataset dropped).
 //! `notes`, when given, says what the rendering left out.
