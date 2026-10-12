@@ -13,6 +13,8 @@ OpenTelemetry:
   role, object, subject or claim;
 - **traces**: a decision as a span under the request that caused it, and a statement's execution
   profile as a span beside it.
+- **lineage**: the node's lineage facts as [OpenLineage](https://openlineage.io) events, to Marquez,
+  DataHub, OpenMetadata or Purview.
 
 It also decides the audit level **per role, per user and per door**, samples allowed statements, and
 reports its own health. It enforces nothing and changes no decision. It can never slow or stop a
@@ -34,6 +36,7 @@ status says why (`attach_error`).
 
 - [Getting started](getting-started.md): load it beside acl, point it at a collector, see a record.
 - [Levels and rules](levels-and-rules.md): which sessions are audited at which level.
-- Signals: [logs](logs.md), [metrics](metrics.md), [traces](traces.md), and [tresor's audit](tresor.md).
+- Signals: [logs](logs.md), [metrics](metrics.md), [traces](traces.md), [lineage](lineage.md), and
+  [tresor's audit](tresor.md).
 - [Reference](reference.md): every function and setting.
 - [Deployment](deployment.md): collectors, Application Insights, a local Grafana stack.

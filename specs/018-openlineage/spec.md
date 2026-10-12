@@ -210,3 +210,21 @@ same duckdb pin. The contract check stays as it is: one version on both sides, o
 
 - DataHub / OpenMetadata e2e besides Marquez.
 - Kafka transport, if asked for.
+
+## Addendum 2026-10-12: after duckdb-acl spec 112, and the docs caught up
+- **A source is named by its alias.** With a declared identity (spec 112) the node's `NAMESPACE` event is in the
+  source's address (`postgres://pg.prod:5432`), and `Namespace()` took the name from the namespace's tail
+  (`pg.prod:5432`) - not the alias this spec promises. The node now carries the alias as the dataset's `name`
+  (duckdb-acl #216); the rendering prefers it, and falls back to the tail for an older node (`<ns>/source/<alias>`).
+  Test: `test_acl_otel_lineage.cpp`'s NAMESPACE case; the Marquez e2e attaches a source with an identity.
+- **The bootstrap waits for the node's lineage to be on.** It read only `acl_lineage_level`; since spec 112 a level
+  without a namespace sends nothing, and the bootstrap said `sent N`. It now asks `acl_lineage_status()` and waits
+  on its reason (`waiting: no namespace: …`). Test: the Marquez e2e's last step.
+- **The Marquez e2e** spoke spec 107's names (`acl://e2e/sales` + `orders`); it now checks spec 112's
+  (`acl://e2e` + `sales.main.orders`).
+- **Not built:** the self-metrics of the design above (`acl_otel.lineage.exported/.rejected/.retried/.dropped`) -
+  the status's counts are the lane's only account. A follow-up if a dashboard needs them.
+- **Docs** (`lineage.md`, `index.md`): the namespace in the quick start, the run kinds (CTE write, RENAME, a quack
+  streamed load, a SELECT under a parent), physical definitions, a source's `NAMESPACE` rendering, the job's names,
+  a root-only parent, the node's refusal of a non-UUID parent first, whole-target edges, the status's keys, and
+  which settings take effect at once.

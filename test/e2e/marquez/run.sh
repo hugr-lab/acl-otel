@@ -30,8 +30,9 @@ echo "$status" | grep -q '"lost_retries":0' || fail "lost events: $status"
 echo "$status" | grep -q '"rejected":0' || fail "rejected events: $status"
 ok "delivered, nothing rejected or lost"
 
-ns=$(enc acl://e2e/sales)
-orders=$(get "/api/v1/namespaces/$ns/datasets/orders") || fail "no dataset sales.orders in Marquez"
+# duckdb-acl spec 112: a virtual dataset is the cluster's namespace + <vcat>.<schema>.<object>
+ns=$(enc acl://e2e)
+orders=$(get "/api/v1/namespaces/$ns/datasets/$(enc sales.main.orders)") || fail "no dataset sales.main.orders in Marquez"
 # the facet as sent (Marquez's own `fields` keeps one copy per DatasetEvent version)
 echo "$orders" | python3 -c 'import json,sys;d=json.load(sys.stdin);f=[x["name"] for x in d["facets"]["schema"]["fields"]];assert f==["id","amount","ssn","address"],f' \
 	|| fail "orders' schema: $orders"
@@ -49,7 +50,7 @@ ok "the role's tags: caps, visible fields, a narrowed path, the hidden field unt
 
 # a definition's columnLineage travels as its DatasetEvent's facet (Marquez indexes column lineage
 # from runs only, so its graph API shows the runs' edges below, the facet this one)
-big=$(get "/api/v1/namespaces/$ns/datasets/big") || fail "no dataset sales.big"
+big=$(get "/api/v1/namespaces/$ns/datasets/$(enc sales.main.big)") || fail "no dataset sales.main.big"
 echo "$big" | python3 -c '
 import json,sys
 f=json.load(sys.stdin)["facets"]["columnLineage"]["fields"]
@@ -61,6 +62,10 @@ ok "the view's column lineage reaches the physical source"
 
 src=$(get "/api/v1/namespaces/$(enc acl://e2e/source/warehouse)/datasets/warehouse") || fail "no source warehouse"
 ok "the attached source's namespace"
+mart=$(get "/api/v1/namespaces/$(enc postgres://mart.corp:5432)/datasets/mart") || fail "no source mart under its identity"
+echo "$mart" | python3 -c 'import json,sys;d=json.load(sys.stdin)["facets"]["datasource"];assert d["name"]=="mart" and d["uri"]=="postgres://mart.corp:5432",d' \
+	|| fail "the identified source's datasource: $mart"
+ok "a source with an identity: its address the namespace, its alias the name"
 
 # Marquez names a job with a parent `<parent job>.<job>`
 runs=$(get "/api/v1/namespaces/$(enc acl://e2e/client/gateway)/jobs/daily.load.dbt.sink_model/runs") ||
@@ -75,12 +80,19 @@ assert f["duckdb_acl"]["roles"]==["clerk"],f["duckdb_acl"]
 ' || fail "the run: $runs"
 ok "the write's run, under its parent, with the duckdb_acl facet"
 
-sink=$(get "/api/v1/column-lineage?nodeId=$(enc "dataset:acl://e2e/sales:sink")&depth=1") || fail "no column lineage for sales.sink"
+sink=$(get "/api/v1/column-lineage?nodeId=$(enc "dataset:acl://e2e:sales.main.sink")&depth=1") || fail "no column lineage for sales.main.sink"
 echo "$sink" | python3 -c '
 import json,sys
 ids={n["id"] for n in json.load(sys.stdin)["graph"]}
-assert "datasetField:acl://e2e/sales:orders:amount" in ids,ids
+assert "datasetField:acl://e2e:sales.main.orders:amount" in ids,ids
 assert not any("source/phys" in i for i in ids),ids
 ' || fail "the run's column lineage: $sink"
 ok "the run's edges are virtual: sink.total <- orders.amount, no physical name"
+# the bootstrap waits for the node's lineage to be on - a level without a namespace sends nothing
+early=$(printf "%s\n" "LOAD '$ACL_EXT';" "LOAD '$otel';" "ATTACH ':memory:' AS store;" \
+	"SELECT acl_use_db('store', 'acl', true);" "SET GLOBAL acl_lineage_level = 'on';" \
+	"SET GLOBAL acl_otel_lineage = '$api';" ".shell sleep 1" \
+	"SELECT acl_otel_status()::JSON->'lineage'->>'bootstrap' AS bootstrap;" | "$cli" -unsigned -csv | tail -1)
+echo "$early" | grep -q '^"\?waiting: no namespace' || fail "the bootstrap before a namespace: $early"
+ok "the bootstrap waits for a namespace"
 echo "PASS e2e marquez"
