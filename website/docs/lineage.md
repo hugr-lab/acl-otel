@@ -12,8 +12,12 @@ Marquez, DataHub, OpenMetadata, or Purview's OpenLineage endpoint.
 
 ```sql
 SET GLOBAL acl_lineage_level = 'on';                       -- the node makes the facts (duckdb-acl)
+SET GLOBAL acl_lineage_namespace = 'acl://prod';           -- ... under the cluster's namespace
 SET GLOBAL acl_otel_lineage = 'https://marquez.corp:5000'; -- acl-otel sends them
 ```
+
+The node makes no lineage without a namespace (duckdb-acl spec 112: it has no default). On a cluster
+node it is the cluster's: `ACL CLUSTER SET acl_lineage_namespace = 'acl://prod'`.
 
 Lineage runs on its own lane, like the other signals. Nothing a statement does waits for it.
 
@@ -21,19 +25,29 @@ Lineage runs on its own lane, like the other signals. Nothing a statement does w
 
 | the node's fact | OpenLineage |
 | --- | --- |
-| a write (INSERT / UPDATE / DELETE / MERGE / CTAS, Flight ingest) | `RunEvent` `COMPLETE` with `columnLineage` on its output; a failed one is `FAIL`, and one whose transaction rolled back is `ABORT` (duckdb-acl spec 112) - both name their output without lineage |
-| a SELECT declared as a step of an external job | `RunEvent` with its inputs |
+| a write (INSERT / UPDATE / DELETE / MERGE / CTAS, a SELECT whose CTE writes, a client's RENAME, Flight ingest, a quack client's streamed load) | `RunEvent` `COMPLETE` with `columnLineage` on its output; a failed one is `FAIL`, and one whose transaction rolled back is `ABORT` (duckdb-acl spec 112) - both name their output without lineage |
+| a SELECT under a declared parent | `RunEvent` with its inputs |
 | a definition: a virtual table, view or table function | `DatasetEvent` with `schema`, `columnLineage`, `tags`, `lifecycleStateChange`, `datasetType` |
+| the operator's own definition of a physical table or view (`ACL NATIVE`, operator SQL) | `DatasetEvent` - dropped with `acl_otel_lineage_physical = false` |
 | a grant that changes what roles see | `DatasetEvent` with the new `tags` |
-| `ATTACH` / `DETACH` of a source | `DatasetEvent` of the source: `datasource`, `datasetType` `SOURCE` |
+| `ATTACH` / `DETACH` of a source | `DatasetEvent` of the source: named by its alias, in the source's namespace; `datasource` (the alias, and the namespace as `uri` when it is one), `datasetType` `SOURCE` with the source's type as `subType` (`POSTGRES`), `lifecycleStateChange` on a DETACH |
+
+Which statements the node makes runs for, and which it leaves out, is duckdb-acl's
+[lineage page](https://hugr-lab.github.io/duckdb-acl/docs/lineage). A source with a declared identity
+(`ATTACH … LINEAGE 'postgres://pg.prod:5432/sales'`) is in its own address's namespace
+(`postgres://pg.prod:5432`), still named by its alias.
 
 **On a run:**
-- **job** - the job the client declared (`LINEAGE JOB`, `x-openlineage-job`), or `sql:<hash>`. Its
-  facets are `jobType` and, when the node allows it, `sql` (normalized: every constant a `?`).
+- **job** - the job the client declared (`LINEAGE JOB`, `x-openlineage-job`, `SET acl_lineage_job`),
+  or `sql:<hash>`; a physical statement (`ACL NATIVE`, the operator's SQL) is `physical:<operation>`.
+  Its namespace is `<ns>/client/<door>`. Its facets are `jobType` and, when the node allows it, `sql`
+  (normalized: every constant a `?`).
 - **`parent`** - the external run the statement declared itself a step of (`OPENLINEAGE_PARENT_ID`),
-  with its root. Marquez files such a job as `<parent job>.<job>`.
-  - OpenLineage run ids are UUIDs. A parent whose run id is not one is left out of the event (a strict
-    backend refuses the whole event over it), and the status counts it as `parent_dropped`.
+  with its root. Marquez files such a job as `<parent job>.<job>`. A run that declared only a root
+  sends the root as its parent.
+  - OpenLineage run ids are UUIDs. The node refuses a parent whose run id is not one where it enters
+    (duckdb-acl spec 109). Should one still arrive, it is left out of the event (a strict backend
+    refuses the whole event over it), and the status counts it as `parent_dropped`.
 - **`duckdb_acl`** - our own facet (a custom facet carries its producer's prefix), schema
   [`AclRunFacet.json`](https://hugr-lab.github.io/acl-otel/schemas/AclRunFacet.json):
   - `client` - the door: flight, quack, session or gateway;
@@ -48,7 +62,8 @@ Lineage runs on its own lane, like the other signals. Nothing a statement does w
 Marquez keeps the tags and the column lineage of a `DatasetEvent` as facets. Its column-lineage
 graph is built from runs only.
 
-An input field is listed once, with every transformation it goes through. An edge from a source
+An input field is listed once, with every transformation it goes through. An edge to the whole
+target (a join, filter or group key) goes into the facet's `dataset` list. An edge from a source
 taken whole (an opaque function, no field to name) is not sent; the event says `approximate`.
 
 ## The first catalog
@@ -58,7 +73,8 @@ When acl-otel starts with lineage on, and whenever the backend changes, it calls
 node has.
 
 - **Waiting for the node.** At load, acl may not be loaded yet, its policy catalog not chosen, its
-  lineage not on. The bootstrap asks every 5 seconds for up to 5 minutes, then gives up.
+  lineage not on (`acl_lineage_status()`: the level, and a namespace). The bootstrap asks every 5
+  seconds for up to 5 minutes, then gives up.
 - **Status.** The outcome is under `bootstrap`: `sent N`, `waiting: …`, `gave up: …`, or `error: …`.
   After a give-up, `SELECT acl_lineage_resend()` does the same by hand.
 - **Off.** `acl_otel_lineage_bootstrap = false` turns it off.
@@ -106,8 +122,12 @@ host. To any other plain-http URL the event is not sent (`lost_key`).
 
 ```sql
 SELECT acl_otel_lineage_flush();                 -- send what is queued now (bounded)
-SELECT acl_otel_status()::JSON->'lineage';       -- url, key source, sent / rejected / lost_*, bootstrap
+SELECT acl_otel_status()::JSON->'lineage';       -- url, key source, the counts, bootstrap, last_error
 ```
+
+The status's `lineage` carries `url`, `key` (the key's source), `events` (received from the node),
+`queue_fill`, `sent`, `rejected`, `retried`, `lost_queue`, `lost_retries`, `lost_key`, `lost_stopped`,
+`parent_dropped`, `bootstrap` and `last_error`. A URL refused at the SET shows as `{"error": …}`.
 
 ## Settings
 
@@ -122,5 +142,8 @@ SELECT acl_otel_status()::JSON->'lineage';       -- url, key source, sent / reje
 | `acl_otel_lineage_bootstrap` | `true` | re-send the definitions on start and on a new backend |
 | `acl_otel_lineage_queue_size` | `10000` | events the lane holds, from the next `acl_otel_start` |
 | `acl_otel_lineage_batch_size` | `64` | events per wake, from the next `acl_otel_start` |
+
+Every other setting takes effect at once: the lane is rebuilt, and a new backend gets the definitions
+again (the bootstrap).
 
 TLS follows the URL's scheme. `acl_otel_certificate` names a CA file.

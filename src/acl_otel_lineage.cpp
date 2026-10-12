@@ -411,10 +411,14 @@ struct Rendering {
 			return string();
 		}
 		auto &source = lineage.datasets[0];
+		// the node names the source by its alias (duckdb-acl spec 112 addendum); an older node does not,
+		// and its namespace then ends in the alias (`<ns>/source/<alias>`) - an identity's address does not
 		auto slash = source.ns.rfind('/');
-		auto alias = slash == string::npos ? source.ns : source.ns.substr(slash + 1);
+		auto alias = !source.name.empty()    ? source.name
+		             : slash == string::npos ? source.ns
+		                                     : source.ns.substr(slash + 1);
 		vector<string> facets;
-		// `uri` is a URI by the facet's schema: the namespace when it is one (the default acl://... is)
+		// `uri` is a URI by the facet's schema: the namespace when it is one (an identity, acl://...)
 		facets.push_back("\"datasource\":{" + FacetHead(options, FacetUrl("1-0-1", "DatasourceDatasetFacet")) +
 		                 ",\"name\":" + Quote(alias) +
 		                 (source.ns.find("://") == string::npos ? string() : ",\"uri\":" + Quote(source.ns)) + "}");

@@ -367,11 +367,16 @@ void OtelState::StartBootstrap(DatabaseInstance &db) {
 					// a service connection of the node: the operator's (acl_lineage_resend is never a
 					// principal's)
 					Connection con(*instance);
-					auto level = con.Query("SELECT current_setting('acl_lineage_level')");
-					if (level->HasError()) {
+					// the node's own answer (duckdb-acl spec 112): `on` needs the level AND a namespace - with
+					// none the node sends nothing, and a resend would only say how many it did not send
+					auto state = con.Query("SELECT acl_lineage_status()");
+					string lineage = state->HasError() ? string() : state->Collection().GetValue(0, 0).ToString();
+					if (state->HasError()) {
 						waiting = "acl is not loaded";
-					} else if (level->Collection().GetValue(0, 0).ToString() != "on") {
+					} else if (lineage == "off") {
 						waiting = "acl_lineage_level is off";
+					} else if (lineage != "on") {
+						waiting = lineage; // `no namespace: …`
 					} else {
 						auto result = con.Query("SELECT acl_lineage_resend()");
 						if (!result->HasError()) {

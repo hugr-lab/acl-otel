@@ -245,6 +245,16 @@ void TestNamespace() {
 	event.lineage = plain;
 	Json no_uri(RenderOpenLineage(event, Options()));
 	Check(no_uri.At("/dataset/facets/datasource/uri") == nullptr, "a namespace that is no URI is no datasource uri");
+	// an identity (duckdb-acl spec 112): the namespace is the source's address, the alias its name
+	auto identified = make_shared_ptr<acl::AuditLineage>(*lineage);
+	identified->datasets[0].ns = "postgres://pg.prod:5432";
+	identified->datasets[0].name = "warehouse";
+	event.lineage = identified;
+	Json named(RenderOpenLineage(event, Options()));
+	Check(named.Str("/dataset/namespace") == "postgres://pg.prod:5432", "the identity's namespace");
+	Check(named.Str("/dataset/name") == "warehouse" && named.Str("/dataset/facets/datasource/name") == "warehouse",
+	      "named by the alias the node sends, not the address's tail");
+	Check(named.Str("/dataset/facets/datasource/uri") == "postgres://pg.prod:5432", "the address as the uri");
 	event.lineage = lineage;
 	Check(RenderOpenLineage(event, Options(false)).empty(), "physical off: no source is sent");
 }

@@ -19,6 +19,8 @@ ACL ADMIN CREATE ROLE clerk;
 ACL ADMIN GRANT CATALOG sales TO ROLE clerk WITH (select, insert) MAIN;
 ACL ADMIN GRANT TABLE sales.orders TO ROLE clerk COLUMNS (id, amount, address.city);
 ATTACH ':memory:' AS warehouse;
+-- duckdb-acl spec 112: a source with an identity - its namespace is its address, its name the alias
+ATTACH ':memory:' AS mart LINEAGE 'postgres://mart.corp:5432/sales';
 ACL ROLE "clerk" LINEAGE PARENT 'airflow/daily.load/01929e3a-0000-7000-8000-000000000001' JOB 'dbt.sink_model'
     INSERT INTO sink SELECT id, amount FROM orders WHERE amount > 0;
 SELECT acl_lineage_flush() AS node_flushed;
