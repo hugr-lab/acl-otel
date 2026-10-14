@@ -31,7 +31,9 @@ rule (its spec 005); this spec is acl_otel's side, the same hooks tresor has (tr
 - **One duckdb-ext-common**: built in beside duckdb-acl (`ACL_ROOT`) and tresor (`TRESOR_ROOT`), one target compiles
   all three with one include path, so whichever copy of duckdb-ext-common comes first serves the contracts and the
   hooks to all of them. `acl_otel_configure_targets` compares acl_otel's `contracts/` and `hooks/` with each copy and
-  refuses a difference at configure time (tresor's check, for the headers acl_otel reads).
+  refuses a difference at configure time (tresor's check, for the headers acl_otel reads). Only the `*.hpp` files:
+  `hooks/` holds a `test/` directory, which CMake hashes as an empty file on macOS and fails to read on Linux - the
+  first Linux build of hugr-node (its #5) stopped there.
 
 ## Enforcement / security
 
