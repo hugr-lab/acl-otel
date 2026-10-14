@@ -96,11 +96,14 @@ endif()
 # contracts and the hooks to every half. They must be the same files, not only
 # the same contract stamps: refused otherwise.
 function(acl_otel_check_shared_headers)
+  # the headers only: hooks/ holds a test/ directory, and CMake hashes a
+  # directory as an empty file on macOS but fails to read it on Linux
   file(
     GLOB shared
+    LIST_DIRECTORIES false
     RELATIVE "${ACL_OTEL_ROOT}/duckdb-ext-common"
-    "${ACL_OTEL_ROOT}/duckdb-ext-common/contracts/*"
-    "${ACL_OTEL_ROOT}/duckdb-ext-common/hooks/*")
+    "${ACL_OTEL_ROOT}/duckdb-ext-common/contracts/*.hpp"
+    "${ACL_OTEL_ROOT}/duckdb-ext-common/hooks/*.hpp")
   foreach(root ${ACL_ROOT} ${TRESOR_ROOT})
     if(NOT EXISTS "${root}/duckdb-ext-common")
       continue()
