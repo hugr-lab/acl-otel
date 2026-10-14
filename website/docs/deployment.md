@@ -4,6 +4,14 @@ The node exports to an OpenTelemetry Collector, or to any OTLP endpoint. One end
 three signals: `/v1/logs`, `/v1/metrics` and `/v1/traces` under the same host for HTTP, and one
 `host:4317` for gRPC.
 
+## In a hugr platform node
+
+A platform node runs [hugr-node](https://github.com/hugr-lab/hugr-node)'s `hugr_node`, which has acl_otel built in
+(with duckdb-acl and tresor): there is nothing to `LOAD`, and the settings and functions on this site are the same.
+Until an endpoint is set it exports nothing. In a cluster the destination is the cluster's - `acl_otel_endpoint`,
+its protocol and TLS, and the lineage backend are cluster profile items (`ACL CLUSTER SET`), one for every node and
+never a group's.
+
 ## Configure it the OpenTelemetry way
 
 Leave the settings at their defaults and set the environment:
