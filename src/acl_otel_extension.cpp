@@ -6,7 +6,9 @@
 // base's function gate denies to a principal by prefix (C8) - the surface is the operator's by
 // construction. Nothing here enforces, changes a decision, or can slow one.
 
+#ifndef ACL_OTEL_EMBEDDED // spec 024: an extension that builds acl_otel in is the one main
 #define DUCKDB_EXTENSION_MAIN
+#endif
 
 #include "acl_otel_extension.hpp"
 
@@ -14,6 +16,7 @@
 #include "acl_otel_lineage.hpp"
 #include "acl_otel_metrics.hpp"
 #include "acl_otel_otlp.hpp"
+#include "acl_otel_version.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -36,8 +39,8 @@ void RequireGlobal(const char *name, SetScope scope) {
 }
 
 void AclOtelVersionFunc(DataChunk &args, ExpressionState &, Vector &result) {
-#ifdef EXT_VERSION_ACL_OTEL
-	result.Reference(Value(EXT_VERSION_ACL_OTEL), count_t(args.size()));
+#ifdef ACL_OTEL_VERSION_TEXT
+	result.Reference(Value(ACL_OTEL_VERSION_TEXT), count_t(args.size()));
 #else
 	result.Reference(Value(""), count_t(args.size()));
 #endif
@@ -501,8 +504,13 @@ void LoadInternal(ExtensionLoader &loader) {
 
 } // namespace
 
-void AclOtelExtension::Load(ExtensionLoader &loader) {
+void LoadAclOtelCore(ExtensionLoader &loader) {
 	LoadInternal(loader);
+}
+
+#ifndef ACL_OTEL_EMBEDDED
+void AclOtelExtension::Load(ExtensionLoader &loader) {
+	LoadAclOtelCore(loader);
 }
 
 std::string AclOtelExtension::Name() {
@@ -510,18 +518,21 @@ std::string AclOtelExtension::Name() {
 }
 
 std::string AclOtelExtension::Version() const {
-#ifdef EXT_VERSION_ACL_OTEL
-	return EXT_VERSION_ACL_OTEL;
+#ifdef ACL_OTEL_VERSION_TEXT
+	return ACL_OTEL_VERSION_TEXT;
 #else
 	return "";
 #endif
 }
+#endif
 
 } // namespace duckdb
 
+#ifndef ACL_OTEL_EMBEDDED
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(acl_otel, loader) {
-	duckdb::LoadInternal(loader);
+	duckdb::LoadAclOtelCore(loader);
 }
 }
+#endif

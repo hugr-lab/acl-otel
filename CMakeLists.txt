@@ -12,57 +12,15 @@ set(CMAKE_CXX_STANDARD
     CACHE STRING "C++ standard to enforce")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# the base's contract header (acl_audit.hpp + acl_principal.hpp, header-only)
-# comes from the shared repository duckdb-ext-common (spec 010; its contracts/
-# directory, the same header the base compiles) - the extension compiles against
-# it and links nothing of acl's (a loadable is dlopen'd RTLD_LOCAL); the level
-# rules are parsed with duckdb's bundled yyjson
-include_directories(src/include duckdb-ext-common/contracts
-                    duckdb-ext-common/hooks duckdb/third_party/yyjson/include)
-
-# the OpenTelemetry C++ SDK (spec 002): the OTLP exporters over HTTP/protobuf
-# and gRPC for the three signals, from vcpkg
-# (opentelemetry-cpp[otlp-http,otlp-grpc] in vcpkg.json), linked statically into
-# the loadable as the base links Arrow. The TRACE exporters are the unsuffixed
-# targets; the log and metric ones carry the signal in their name (spec 008's
-# note).
-find_package(opentelemetry-cpp CONFIG REQUIRED)
-set(ACL_OTEL_SDK_LIBS
-    opentelemetry-cpp::otlp_http_log_record_exporter
-    opentelemetry-cpp::otlp_grpc_log_record_exporter
-    opentelemetry-cpp::otlp_http_metric_exporter
-    opentelemetry-cpp::otlp_grpc_metrics_exporter
-    opentelemetry-cpp::otlp_http_exporter
-    opentelemetry-cpp::otlp_grpc_exporter
-    opentelemetry-cpp::logs
-    opentelemetry-cpp::metrics
-    opentelemetry-cpp::trace
-    opentelemetry-cpp::resources
-    opentelemetry-cpp::http_client_curl)
-
-# everything but the entry point: what the loadable is, and what the SDK-linked
-# tests compile in
-set(ACL_OTEL_LIB_SOURCES
-    src/acl_otel_rules.cpp
-    src/acl_otel_sink.cpp
-    src/acl_otel_tresor.cpp
-    src/acl_otel_state.cpp
-    src/acl_otel_otlp.cpp
-    src/acl_otel_metrics.cpp
-    src/acl_otel_otlp_metrics.cpp
-    src/acl_otel_sampling.cpp
-    src/acl_otel_traces.cpp
-    src/acl_otel_otlp_traces.cpp
-    src/acl_otel_lineage.cpp
-    src/acl_otel_lineage_http.cpp
-    src/acl_otel_lineage_key.cpp)
-set(EXTENSION_SOURCES src/acl_otel_extension.cpp ${ACL_OTEL_LIB_SOURCES})
+# the sources, the include directories, the SDK and its libraries (spec 024: the
+# same file an embedder includes)
+include(${CMAKE_CURRENT_LIST_DIR}/acl_otel_sources.cmake)
+set(EXTENSION_SOURCES ${ACL_OTEL_SOURCES})
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-target_link_libraries(${EXTENSION_NAME} ${ACL_OTEL_SDK_LIBS})
-target_link_libraries(${LOADABLE_EXTENSION_NAME} ${ACL_OTEL_SDK_LIBS})
+acl_otel_configure_targets(${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
 
 # The transport's test (spec 002) links the SDK, its protobuf classes (the fake
 # receivers decode what arrives) and gRPC, so it is a CMake target rather than a
