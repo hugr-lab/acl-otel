@@ -1,4 +1,4 @@
-# spec 018: a Marquez for the OpenLineage e2e (test/e2e/marquez/run.sh) - its API on 127.0.0.1:5050
+# spec 018: a Marquez for the OpenLineage e2e (test/e2e/marquez/run.sh) - its API on 127.0.0.1:${MARQUEZ_PORT:-5050}
 services:
   db:
     image: postgres:14
@@ -24,4 +24,4 @@ services:
       POSTGRES_USER: marquez
       POSTGRES_PASSWORD: marquez
     ports:
-      - "127.0.0.1:5050:5000"
+      - "127.0.0.1:${MARQUEZ_PORT:-5050}:5000"

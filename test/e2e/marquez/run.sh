@@ -3,13 +3,15 @@
 # attaches a source and writes as the role under an external parent; Marquez's API then shows the
 # datasets, their column lineage and tags, the source, and the run under its parent.
 #   ACL_EXT=<duckdb-acl build>/extension/acl/acl.duckdb_extension test/e2e/marquez/run.sh
+#   MARQUEZ_PORT=<port> (default 5050) when another Marquez holds it
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 : "${ACL_EXT:?ACL_EXT names the built acl extension}"
 otel="$root/build/release/extension/acl_otel/acl_otel.duckdb_extension"
 cli="$root/build/release/duckdb"
-api=http://127.0.0.1:5050
+export MARQUEZ_PORT="${MARQUEZ_PORT:-5050}"
+api=http://127.0.0.1:$MARQUEZ_PORT
 project=acl-otel-marquez
 
 docker compose -p "$project" -f "$here/docker-compose.yml" up -d >/dev/null
@@ -17,7 +19,7 @@ trap '[ -n "${KEEP:-}" ] || docker compose -p "$project" -f "$here/docker-compos
 for _ in $(seq 1 60); do curl -sf "$api/api/v1/namespaces" >/dev/null && break; sleep 2; done
 
 sql=$(sed -e "s#__ACL__#$ACL_EXT#" -e "s#__OTEL__#$otel#" -e "s#__URL__#$api#" "$here/node.sql")
-out=$(printf "%s\n" "$sql" | "$cli" -unsigned -csv)
+out=$(printf "%s\n" "$sql" | "$cli" -no-agent -unsigned -csv)
 echo "$out"
 status=$(echo "$out" | tail -1 | sed 's/""/"/g')
 
@@ -92,7 +94,7 @@ ok "the run's edges are virtual: sink.total <- orders.amount, no physical name"
 early=$(printf "%s\n" "LOAD '$ACL_EXT';" "LOAD '$otel';" "ATTACH ':memory:' AS store;" \
 	"SELECT acl_use_db('store', 'acl', true);" "SET GLOBAL acl_lineage_level = 'on';" \
 	"SET GLOBAL acl_otel_lineage = '$api';" ".shell sleep 1" \
-	"SELECT acl_otel_status()::JSON->'lineage'->>'bootstrap' AS bootstrap;" | "$cli" -unsigned -csv | tail -1)
+	"SELECT acl_otel_status()::JSON->'lineage'->>'bootstrap' AS bootstrap;" | "$cli" -no-agent -unsigned -csv | tail -1)
 echo "$early" | grep -q '^"\?waiting: no namespace' || fail "the bootstrap before a namespace: $early"
 ok "the bootstrap waits for a namespace"
 echo "PASS e2e marquez"
