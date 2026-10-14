@@ -4,6 +4,7 @@
 // values.
 
 #include "acl_otel_otlp.hpp"
+#include "acl_otel_version.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -256,8 +257,8 @@ OtlpConfig OtlpConfig::From(DatabaseInstance &db) {
 		config.instance_id = string(host[0] ? host : "node") + ":" + std::to_string(static_cast<int64_t>(ACL_OTEL_PID));
 	}
 	config.duckdb_version = DuckDB::LibraryVersion();
-#ifdef EXT_VERSION_ACL_OTEL
-	config.acl_otel_version = EXT_VERSION_ACL_OTEL;
+#ifdef ACL_OTEL_VERSION_TEXT
+	config.acl_otel_version = ACL_OTEL_VERSION_TEXT;
 #endif
 	return config;
 }

@@ -143,6 +143,11 @@ The pins ride duckdb-acl's: duckdb's 2.0 release branch `v2.0-cyanoptera`, exten
 `main`, and the contract header from the shared repository `duckdb-ext-common` (a tag; spec 010).
 `ACL_BASE` names the base commit whose CI artifact the beside-acl tests prefer.
 
+Another extension can build acl_otel into itself (spec 024; hugr-node's `hugr_node` does): it sets
+`ACL_OTEL_EMBEDDED`, includes `acl_otel_sources.cmake` (the sources, the include directories, the SDK), builds
+`ACL_OTEL_SOURCES` into its own targets, calls `acl_otel_configure_targets(...)` and, at load, `LoadAclOtelCore(loader)`.
+acl_otel then has no entry point of its own, and `acl_otel_version()` still answers acl-otel's commit.
+
 ## License
 
 Business Source License 1.1 - see [LICENSE](LICENSE). Production use is permitted except as a hosted

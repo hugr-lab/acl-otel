@@ -4,6 +4,7 @@
 #include "acl_otel.hpp"
 #include "acl_otel_metrics.hpp"
 #include "acl_otel_otlp.hpp"
+#include "acl_otel_version.hpp"
 #include "acl_otel_lineage.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -238,8 +239,8 @@ OtelState::LineagePlan OtelState::ApplyLineage(DatabaseInstance &db, const strin
 	}
 	auto url = LineageUrl(base, text("acl_otel_lineage_endpoint", "api/v1/lineage"));
 	LineageRenderOptions options;
-#ifdef EXT_VERSION_ACL_OTEL
-	options.producer = string("https://github.com/hugr-lab/acl-otel/tree/") + EXT_VERSION_ACL_OTEL;
+#ifdef ACL_OTEL_VERSION_TEXT
+	options.producer = string("https://github.com/hugr-lab/acl-otel/tree/") + ACL_OTEL_VERSION_TEXT;
 #else
 	options.producer = "https://github.com/hugr-lab/acl-otel";
 #endif
