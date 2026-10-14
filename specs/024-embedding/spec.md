@@ -28,6 +28,10 @@ rule (its spec 005); this spec is acl_otel's side, the same hooks tresor has (tr
   `duckdb_extension_generate_version` over `ACL_OTEL_ROOT`) on acl_otel's sources, and `acl_otel_version.hpp` gives
   the three places that name the version (`acl_otel_version()`, the OTLP resource's `acl_otel.version`, the lineage
   producer URL) one `ACL_OTEL_VERSION_TEXT`.
+- **One duckdb-ext-common**: built in beside duckdb-acl (`ACL_ROOT`) and tresor (`TRESOR_ROOT`), one target compiles
+  all three with one include path, so whichever copy of duckdb-ext-common comes first serves the contracts and the
+  hooks to all of them. `acl_otel_configure_targets` compares acl_otel's `contracts/` and `hooks/` with each copy and
+  refuses a difference at configure time (tresor's check, for the headers acl_otel reads).
 
 ## Enforcement / security
 

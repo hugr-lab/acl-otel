@@ -91,8 +91,39 @@ if(ACL_OTEL_EMBEDDED)
   endif()
 endif()
 
+# Built in beside duckdb-acl (ACL_ROOT) or tresor (TRESOR_ROOT): one directory,
+# so whichever duckdb-ext-common the include directories name first serves the
+# contracts and the hooks to every half. They must be the same files, not only
+# the same contract stamps: refused otherwise.
+function(acl_otel_check_shared_headers)
+  file(
+    GLOB shared
+    RELATIVE "${ACL_OTEL_ROOT}/duckdb-ext-common"
+    "${ACL_OTEL_ROOT}/duckdb-ext-common/contracts/*"
+    "${ACL_OTEL_ROOT}/duckdb-ext-common/hooks/*")
+  foreach(root ${ACL_ROOT} ${TRESOR_ROOT})
+    if(NOT EXISTS "${root}/duckdb-ext-common")
+      continue()
+    endif()
+    foreach(header ${shared})
+      if(EXISTS "${root}/duckdb-ext-common/${header}")
+        file(SHA256 "${ACL_OTEL_ROOT}/duckdb-ext-common/${header}" ours)
+        file(SHA256 "${root}/duckdb-ext-common/${header}" theirs)
+        if(NOT ours STREQUAL theirs)
+          message(
+            FATAL_ERROR
+              "acl_otel and ${root}, built into one extension, need the same "
+              "duckdb-ext-common: ${header} differs (pin the submodules to one "
+              "commit)")
+        endif()
+      endif()
+    endforeach()
+  endforeach()
+endfunction()
+
 # acl_otel's libraries, on the targets the including build made
 function(acl_otel_configure_targets)
+  acl_otel_check_shared_headers()
   foreach(target ${ARGN})
     target_link_libraries(${target} ${ACL_OTEL_SDK_LIBS})
     if(ACL_OTEL_EMBEDDED)
