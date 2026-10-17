@@ -22,6 +22,12 @@ endif
 endif
 
 # Include the Makefile from extension-ci-tools
+# Spec 026: extension-ci-tools a90d6d4 (2026-10-15) hands the distribution build a prebuilt static duckdb
+# (DUCKDB_PREBUILT_LIBRARY / _EXTENSIONS). Its version is the release's alpha (v2.0.0-alpha48730), while the loadable
+# built beside it names the branch (v2.0-cyanoptera), so the test binary refused to LOAD acl_otel on linux_amd64.
+# acl_otel builds duckdb from the pinned source as before, like duckdb-acl (its spec 133).
+override DUCKDB_PREBUILT_LIBRARY :=
+override DUCKDB_PREBUILT_EXTENSIONS :=
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 # --- Standalone C++ tests (the duckdb-acl / mssql-extension style) -----------------------------
