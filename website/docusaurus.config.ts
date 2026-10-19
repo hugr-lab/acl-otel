@@ -67,6 +67,12 @@ const config: Config = {
     // the pages are plain Markdown full of `<role>` and `{"caps": ...}`: .md is CommonMark, never MDX
     format: 'detect',
     mermaid: true,
+    // the hugr-lab.com copy requests no other server: an external image (a badge) is dropped from every page and
+    // every version snapshotted from a tag - those are never edited, so this happens at build time
+    preprocessor: ({fileContent}) =>
+      ionos
+        ? fileContent.replace(/\[!\[[^\]]*\]\(https?:\/\/[^)]*\)\]\([^)]*\)|!\[[^\]]*\]\(https?:\/\/[^)]*\)/g, '')
+        : fileContent,
     hooks: {
       onBrokenMarkdownLinks: 'throw',
     },

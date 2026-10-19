@@ -52,3 +52,9 @@ jobs:
         env:
           DOCS_TARGET: ionos
         run: npm run build -- --out-dir build-ionos
+
+      - name: Check the hugr-lab.com copy requests no other server
+        working-directory: website
+        run: |
+          found=$(grep -rhoE "(src=\"|srcset=\"|url\(|@import )['\"]?https?://[^\"') ]+" build-ionos | sort -u || true)
+          if [ -n "$found" ]; then echo "third-party requests in the hugr-lab.com build:"; echo "$found"; exit 1; fi
