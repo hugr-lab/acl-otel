@@ -45,3 +45,10 @@ jobs:
         run: |
           npm ci
           npx docusaurus build
+
+      # the hugr-lab.com copy (pages.yml uploads it when DOCS_IONOS is on): built here, never uploaded
+      - name: Build for hugr-lab.com
+        working-directory: website
+        env:
+          DOCS_TARGET: ionos
+        run: npm run build -- --out-dir build-ionos
