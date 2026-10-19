@@ -17,6 +17,7 @@ vcpkg_installed/
 node_modules/
 .docusaurus/
 website/build/
+website/build-ionos/
 website/versioned_docs/
 website/versioned_sidebars/
 website/versions.json
