@@ -23,11 +23,11 @@ specs here.
 
   | Piece | Where | Pin |
   | --- | --- | --- |
-  | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera` (the base's; `v2.0.0` when tagged) |
+  | duckdb | submodule `duckdb/` | the `v2.0.0` tag, d54cbbe (the base's, spec 027; branch `v2.0-cyanoptera` until then) |
   | duckdb-ext-common | submodule `duckdb-ext-common/` (`contracts/acl_audit.hpp` + `acl_principal.hpp`, and since spec 011 `contracts/tresor_audit.hpp` on `hooks/ext_hooks.hpp`; no submodules of its own) | a tag (`v0.7.1`) |
   | duckdb-acl | **no submodule** since spec 010: the `ACL_BASE` file names the base commit whose CI artifact `fetch_base.sh` prefers for the beside-acl proof | a commit of `main` |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main` |
-  | CI reusable workflows | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
+  | CI reusable workflows | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0.0` |
 
   The base and this extension load on the same instance: **same duckdb pin, always**. A bump of
   the base's pin is a bump here in the same day.

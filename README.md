@@ -139,8 +139,8 @@ A box that already has duckdb-acl's vcpkg checkout can point at it instead of a 
 `VCPKG_TOOLCHAIN_PATH=…/duckdb-acl/vcpkg/scripts/buildsystems/vcpkg.cmake GEN=ninja make` - and
 reuse its binary cache (grpc, protobuf, abseil and curl are the same ports the Flight door builds).
 
-The pins ride duckdb-acl's: duckdb's 2.0 release branch `v2.0-cyanoptera`, extension-ci-tools
-`main`, and the contract header from the shared repository `duckdb-ext-common` (a tag; spec 010).
+The pins ride duckdb-acl's: duckdb's `v2.0.0` tag, extension-ci-tools `main`, and the contract
+header from the shared repository `duckdb-ext-common` (a tag; spec 010).
 `ACL_BASE` names the base commit whose CI artifact the beside-acl tests prefer.
 
 Another extension can build acl_otel into itself (spec 024; hugr-node's `hugr_node` does): it sets
