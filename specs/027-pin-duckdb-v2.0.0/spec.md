@@ -1,11 +1,11 @@
 # Spec 027: re-pin duckdb to the v2.0.0 tag
 
-- **Status**: in progress
+- **Status**: implemented
 - **Date**: 2026-10-21
 
 DuckDB v2.0.0 was released on 2026-10-21. duckdb moves from f8f3f4d to the tag, d54cbbe, 77 commits on, with duckdb-acl's
-spec 141: the base and this extension load into one duckdb, so they move the same day. `ACL_BASE` names duckdb-acl's
-main once spec 141 merges, built at the same duckdb.
+spec 141: the base and this extension load into one duckdb, so they move the same day. `ACL_BASE` names duckdb-acl
+41ec046 (#250, spec 141 merged), built at the same duckdb.
 
 - **The distribution builds the tag**: `duckdb_version: v2.0.0`, as community-extensions builds for 2.0.0 (the 2.0
   branch has moved past it).
