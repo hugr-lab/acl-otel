@@ -1,8 +1,8 @@
 # CI, layout after hugr-lab/duckdb-acl: lint + a Linux build-and-test on every PR, a representative
 # macOS build on merges to main and manual runs. Full platform coverage lives in distribution.yml.
 #
-# The whole stack rides duckdb-acl's pin: duckdb's 2.0 release branch `v2.0-cyanoptera` (the base and
-# this extension load on the same instance, so they share one duckdb), extension-ci-tools `main`.
+# The whole stack rides duckdb-acl's pin: duckdb's `v2.0.0` tag (the base and this extension load on
+# the same instance, so they share one duckdb), extension-ci-tools `main`.
 # A red build means our code or a pin bump - never a floating upstream.
 name: CI
 

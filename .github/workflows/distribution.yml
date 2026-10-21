@@ -2,8 +2,8 @@
 # same inputs. Full platform coverage (Windows MSVC/MinGW, musl, linux_arm64, ...) lives here; the
 # PR loop stays on ci.yml's Linux job.
 #
-# Pinned like duckdb-acl: duckdb's 2.0 release branch `v2.0-cyanoptera` and extension-ci-tools `main`
-# (the two load on one instance, so they share one duckdb); re-pin to the `v2.0.0` tag with the base.
+# Pinned like duckdb-acl: duckdb's `v2.0.0` tag (spec 027, with the base's spec 141) and extension-ci-tools `main`
+# (the two load on one instance, so they share one duckdb).
 name: Distribution build
 
 on:
@@ -27,7 +27,7 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       extension_name: acl_otel
-      duckdb_version: v2.0-cyanoptera
+      duckdb_version: v2.0.0
       ci_tools_version: main
       # wasm is out: an exporter is sockets. osx_amd64 is out by the owner's decision (2026-09-09):
       # nobody runs a server on an Intel Mac, and this extension exists for servers - it costs
@@ -55,7 +55,7 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@main
     with:
       extension_name: acl_otel
-      duckdb_version: v2.0-cyanoptera
+      duckdb_version: v2.0.0
       ci_tools_version: main
       # `format` only. The upstream Tidy Check configures the build WITHOUT provisioning vcpkg, and
       # this extension cannot configure at all without the OpenTelemetry SDK - its CMakeLists says
