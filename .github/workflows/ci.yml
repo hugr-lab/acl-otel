@@ -157,10 +157,11 @@ jobs:
           name: acl_otel-linux_amd64
           path: build/release/extension/acl_otel/acl_otel.duckdb_extension
 
-  # Representative second platform; PRs stay on the Linux job to keep them fast
+  # Representative second platform; PRs stay on the Linux job to keep them fast. macos-15, which the
+  # distribution matrix builds osx_arm64 on too: macos-14 runners are no longer allocated
   build-test-osx:
     name: Build + test (osx_arm64)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 150
     if: ${{ github.event_name != 'pull_request' }}
     env:
